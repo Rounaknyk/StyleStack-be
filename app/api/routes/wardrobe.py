@@ -136,6 +136,12 @@ async def create_wardrobe_item(
     tags: Annotated[str | None, Form(description="Comma-separated tags")] = None,
     description: Annotated[str | None, Form(max_length=500)] = None,
     formality: Annotated[str | None, Form(max_length=50)] = None,
+    ai_category: Annotated[str | None, Form(max_length=100)] = None,
+    ai_color: Annotated[str | None, Form(max_length=100)] = None,
+    ai_season: Annotated[str | None, Form(max_length=50)] = None,
+    ai_formality: Annotated[str | None, Form(max_length=50)] = None,
+    ai_description: Annotated[str | None, Form(max_length=500)] = None,
+    ai_tags: Annotated[str | None, Form(description="Comma-separated AI tags")] = None,
     notes: Annotated[str | None, Form(max_length=2000)] = None,
     purchase_date: Annotated[date | None, Form()] = None,
     purchase_price: Annotated[Decimal | None, Form(ge=0, max_digits=10, decimal_places=2)] = None,
@@ -205,6 +211,10 @@ async def create_wardrobe_item(
             detail="Unable to upload the image to storage",
         ) from exc
 
+    has_ai_preview = all(
+        value and value.strip()
+        for value in (ai_category, ai_color, ai_season, ai_formality, ai_description)
+    )
     item = {
         "owner_firebase_uid": uid,
         "name": name.strip(),
@@ -223,8 +233,14 @@ async def create_wardrobe_item(
         "currency": currency.upper() if currency else None,
         "image_path": image_path,
         "is_favorite": is_favorite,
-        "tagged": False,
-        "ai_tag_status": "pending",
+        "tagged": has_ai_preview,
+        "ai_tag_status": "completed" if has_ai_preview else "pending",
+        "ai_category": ai_category.strip() if has_ai_preview else None,
+        "ai_color": ai_color.strip() if has_ai_preview else None,
+        "ai_season": ai_season.strip() if has_ai_preview else None,
+        "ai_formality": ai_formality.strip() if has_ai_preview else None,
+        "ai_description": ai_description.strip() if has_ai_preview else None,
+        "ai_visual_tags": parse_csv(ai_tags) if has_ai_preview else [],
     }
     try:
         response = client.table("wardrobe_items").insert(item).execute()
@@ -237,23 +253,24 @@ async def create_wardrobe_item(
             created_item["id"],
             created_item["category"],
         )
-        queued = background_jobs.enqueue(
-            ImageTaggingJob(
-                item_id=str(created_item["id"]),
-                image_path=image_path,
-            )
-        )
-        if not queued:
-            try:
-                client.table("wardrobe_items").update(
-                    {"ai_tag_status": "failed"}
-                ).eq("id", str(created_item["id"])).execute()
-            except Exception:
-                logger.exception(
-                    "background_queue_failure_status_update_failed item_id=%s",
-                    created_item["id"],
+        if not has_ai_preview:
+            queued = background_jobs.enqueue(
+                ImageTaggingJob(
+                    item_id=str(created_item["id"]),
+                    image_path=image_path,
                 )
-            created_item["ai_tag_status"] = "failed"
+            )
+            if not queued:
+                try:
+                    client.table("wardrobe_items").update(
+                        {"ai_tag_status": "failed"}
+                    ).eq("id", str(created_item["id"])).execute()
+                except Exception:
+                    logger.exception(
+                        "background_queue_failure_status_update_failed item_id=%s",
+                        created_item["id"],
+                    )
+                created_item["ai_tag_status"] = "failed"
         return created_item
     except Exception as exc:
         # Compensating cleanup prevents an orphaned object if the DB insert fails.
