@@ -22,7 +22,9 @@ class Settings(BaseSettings):
     supabase_service_role_key: str
     supabase_storage_bucket: str = "wardrobe-images"
     background_removal_enabled: bool = True
-    background_removal_model: str = "u2netp"
+    # BiRefNet Lite is substantially more accurate around sleeves, collars,
+    # hems, and soft garment edges than the tiny u2netp model.
+    background_removal_model: str = "birefnet-general-lite"
     fashion_segmentation_enabled: bool = True
     fashion_segmentation_model_url: str = (
         "https://huggingface.co/Xenova/segformer_b2_clothes/resolve/main/onnx/model_quantized.onnx"

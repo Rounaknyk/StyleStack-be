@@ -119,9 +119,13 @@ to the runtime cache on first use. Configure it with:
 
 ```env
 BACKGROUND_REMOVAL_ENABLED=true
-BACKGROUND_REMOVAL_MODEL=u2netp
+BACKGROUND_REMOVAL_MODEL=birefnet-general-lite
 FASHION_SEGMENTATION_ENABLED=true
 ```
+
+The removal model downloads on its first use. StyleStack preserves the original
+image dimensions and rejects any processed result that changes the canvas or
+erases essentially the whole item.
 
 Every wardrobe endpoint requires a Firebase ID token in the `Authorization` header. The API always combines the requested item ID with the verified Firebase UID, so another user's item is returned as `404` rather than exposing its existence.
 

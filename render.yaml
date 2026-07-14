@@ -27,7 +27,7 @@ services:
       - key: BACKGROUND_REMOVAL_ENABLED
         value: "true"
       - key: BACKGROUND_REMOVAL_MODEL
-        value: u2netp
+        value: birefnet-general-lite
       - key: FASHION_SEGMENTATION_ENABLED
         value: "true"
       - key: GMAIL_IMPORT_LOG_EMAIL_PREVIEWS

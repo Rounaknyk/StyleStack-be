@@ -70,13 +70,42 @@ def _session() -> ort.InferenceSession:
 
 
 def _segmentation_map(image: Image.Image) -> np.ndarray:
-    resized = image.convert("RGB").resize((512, 512), Image.Resampling.BILINEAR)
-    pixels = np.asarray(resized, dtype=np.float32) / 255.0
+    # Preserve the source aspect ratio. Stretching a portrait or landscape
+    # photo into a square changes garment proportions and is a common cause of
+    # missing sleeves and hems in the final mask.
+    source = image.convert("RGB")
+    width, height = source.size
+    scale = min(512 / width, 512 / height)
+    resized_width = max(1, round(width * scale))
+    resized_height = max(1, round(height * scale))
+    resized = source.resize(
+        (resized_width, resized_height), Image.Resampling.BILINEAR
+    )
+    left = (512 - resized_width) // 2
+    top = (512 - resized_height) // 2
+    canvas = Image.new("RGB", (512, 512), "white")
+    canvas.paste(resized, (left, top))
+    pixels = np.asarray(canvas, dtype=np.float32) / 255.0
     mean = np.asarray([0.485, 0.456, 0.406], dtype=np.float32)
     std = np.asarray([0.229, 0.224, 0.225], dtype=np.float32)
     values = ((pixels - mean) / std).transpose(2, 0, 1)[None, ...]
     logits = _session().run(None, {"pixel_values": values})[0][0]
-    return np.argmax(logits, axis=0).astype(np.uint8)
+    labels = np.argmax(logits, axis=0).astype(np.uint8)
+    output_height, output_width = labels.shape
+    crop_left = round(left * output_width / 512)
+    crop_top = round(top * output_height / 512)
+    crop_right = round((left + resized_width) * output_width / 512)
+    crop_bottom = round((top + resized_height) * output_height / 512)
+    return labels[
+        crop_top:max(crop_top + 1, crop_bottom),
+        crop_left:max(crop_left + 1, crop_right),
+    ]
+
+
+def _adaptive_odd_filter_size(image_size: tuple[int, int]) -> int:
+    """Return a safe mask expansion that scales with the source resolution."""
+    radius = max(2, min(10, round(min(image_size) * 0.008)))
+    return radius * 2 + 1
 
 
 def isolate_garment_on_white(contents: bytes, category: str) -> bytes | None:
@@ -92,17 +121,40 @@ def isolate_garment_on_white(contents: bytes, category: str) -> bytes | None:
     person_ratio = float(person.mean())
     if target_ratio < 0.004:
         return None
+    # Product/flat-lay photos do not need semantic person removal. The general
+    # high-detail model retains fine garment structure much more reliably.
+    if person_ratio < 0.02:
+        logger.info(
+            "fashion_segmentation_skipped_no_person category=%s person_ratio=%.3f",
+            category,
+            person_ratio,
+        )
+        return None
+    if target_ratio > 0.80:
+        logger.warning(
+            "fashion_segmentation_mask_rejected category=%s garment_ratio=%.3f",
+            category,
+            target_ratio,
+        )
+        return None
     mask = Image.fromarray((target * 255).astype(np.uint8), mode="L").resize(
         source.size, Image.Resampling.NEAREST
     )
-    mask = mask.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(1.2))
+    # Favor recall around the garment boundary so valid fabric is never shaved
+    # away. A soft, resolution-aware expansion restores collars, cuffs, hems,
+    # and sleeve edges while the semantic mask still excludes the person.
+    filter_size = _adaptive_odd_filter_size(source.size)
+    blur_radius = max(1.0, min(2.5, min(source.size) * 0.0015))
+    mask = mask.filter(ImageFilter.MaxFilter(filter_size)).filter(
+        ImageFilter.GaussianBlur(blur_radius)
+    )
     garment = Image.new("RGBA", source.size, (0, 0, 0, 0))
     garment.paste(source, (0, 0), mask)
     white = Image.new("RGBA", source.size, (255, 255, 255, 255))
     white.alpha_composite(garment)
     output = BytesIO()
     white.convert("RGB").save(
-        output, "JPEG", quality=92, optimize=True, progressive=True
+        output, "JPEG", quality=95, optimize=True, progressive=True
     )
     logger.info(
         "fashion_garment_isolated category=%s garment_ratio=%.3f person_ratio=%.3f",

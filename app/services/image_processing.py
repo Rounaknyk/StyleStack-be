@@ -19,7 +19,7 @@ def _background_session():
 
 
 def put_item_on_white_background(contents: bytes, category: str | None = None) -> bytes:
-    """Remove the dominant background and return an optimized white JPEG."""
+    """Remove the background without cropping or resizing the source canvas."""
     settings = get_settings()
     if settings.fashion_segmentation_enabled and category:
         try:
@@ -36,11 +36,35 @@ def put_item_on_white_background(contents: bytes, category: str | None = None) -
 
     source = Image.open(BytesIO(contents))
     source = ImageOps.exif_transpose(source).convert("RGBA")
-    isolated = remove(source, session=_background_session())
+    isolated = remove(
+        source,
+        session=_background_session(),
+        alpha_matting=True,
+        alpha_matting_foreground_threshold=240,
+        alpha_matting_background_threshold=10,
+        alpha_matting_erode_size=5,
+        post_process_mask=True,
+    )
     if not isinstance(isolated, Image.Image):
         isolated = Image.open(BytesIO(isolated)).convert("RGBA")
     else:
         isolated = isolated.convert("RGBA")
+
+    if isolated.size != source.size:
+        raise RuntimeError(
+            "Background removal changed the source canvas from "
+            f"{source.size} to {isolated.size}"
+        )
+
+    alpha = isolated.getchannel("A")
+    alpha_bounds = alpha.getbbox()
+    if alpha_bounds is None:
+        raise RuntimeError("Background removal erased the entire item")
+    kept_area = sum(
+        level * count for level, count in enumerate(alpha.histogram())
+    ) / (255 * source.width * source.height)
+    if kept_area < 0.002:
+        raise RuntimeError("Background removal retained too little of the item")
 
     white = Image.new("RGBA", isolated.size, (255, 255, 255, 255))
     white.alpha_composite(isolated)
@@ -48,7 +72,7 @@ def put_item_on_white_background(contents: bytes, category: str | None = None) -
     white.convert("RGB").save(
         output,
         format="JPEG",
-        quality=92,
+        quality=95,
         optimize=True,
         progressive=True,
     )
