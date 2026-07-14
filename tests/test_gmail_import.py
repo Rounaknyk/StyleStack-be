@@ -176,7 +176,7 @@ class GmailImportLoggingTests(unittest.TestCase):
         candidate = _ImageCandidate(
             contents=b"image",
             content_type="image/jpeg",
-            hint="",
+            hint="Fitness Mantra Sports Winters Cap",
             digest="abc",
             source_url="https://m.media-amazon.com/images/I/product.jpg",
             width=320,
@@ -189,6 +189,23 @@ class GmailImportLoggingTests(unittest.TestCase):
         self.assertEqual(fallback.category, "accessory")
         self.assertEqual(fallback.name, "Fitness Mantra Sports Winters Cap")
         self.assertIn("needs-review", fallback.tags)
+
+    def test_explicit_order_mode_rejects_unlabelled_catalog_image(self) -> None:
+        unrelated_jacket = _ImageCandidate(
+            contents=b"image",
+            content_type="image/jpeg",
+            hint="",
+            digest="jacket",
+            source_url="https://m.media-amazon.com/images/I/jacket.jpg",
+            width=500,
+            height=700,
+        )
+        self.assertIsNone(
+            _forced_order_fallback(
+                unrelated_jacket,
+                "408-5421781-6928348",
+            )
+        )
 
     def test_explicit_order_mode_rejects_nonmerchant_image(self) -> None:
         candidate = _ImageCandidate(

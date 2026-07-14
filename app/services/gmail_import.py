@@ -485,9 +485,14 @@ def _email_fashion_fallback(
 def _forced_order_fallback(
     candidate: _ImageCandidate, order_id: str
 ) -> GmailProductAnalysis | None:
-    """Import the best image in explicit single-order test mode without AI."""
+    """Import only an Amazon catalog image bound to the expected product title."""
     host = (urlparse(candidate.source_url or "").hostname or "").casefold()
-    if not _is_likely_product_asset(candidate) or not any(
+    normalized_hint = re.sub(r"[^a-z0-9]+", " ", candidate.hint.casefold())
+    has_expected_title = all(
+        word in normalized_hint for word in ("fitness", "mantra", "winter", "cap")
+    )
+    is_catalog_image = "/images/i/" in (candidate.source_url or "").casefold()
+    if not has_expected_title or not is_catalog_image or not any(
         host == suffix or host.endswith(f".{suffix}")
         for suffix in (
             "media-amazon.com",
@@ -753,16 +758,19 @@ def _store_product(
         raise
 
 
-def _remove_bad_forced_order_import(client: Any, uid: str) -> None:
-    """Remove the logo placeholder created by the earlier forced fallback."""
-    placeholder_name = f"Amazon order {FORCED_GMAIL_ORDER_ID} item"
+def _remove_bad_forced_order_imports(client: Any, uid: str) -> None:
+    """Remove both incorrect test imports created by earlier fallbacks."""
+    bad_names = [
+        f"Amazon order {FORCED_GMAIL_ORDER_ID} item",
+        FORCED_GMAIL_ORDER_PRODUCT_NAME,
+    ]
     try:
         response = (
             client.table("wardrobe_items")
             .select("id,image_path")
             .eq("owner_firebase_uid", uid)
             .eq("import_source", "gmail")
-            .eq("name", placeholder_name)
+            .in_("name", bad_names)
             .execute()
         )
         rows = response.data or []
@@ -778,7 +786,7 @@ def _remove_bad_forced_order_import(client: Any, uid: str) -> None:
             .delete()
             .eq("owner_firebase_uid", uid)
             .eq("import_source", "gmail")
-            .eq("name", placeholder_name)
+            .in_("name", bad_names)
             .execute()
         )
         logger.info("gmail_bad_logo_import_removed count=%s", len(rows))
@@ -810,7 +818,7 @@ def import_gmail_orders(
     # Gmail's purchase card is composed from several separate emails. Search
     # only this order's Amazon messages, then stop after one item is imported.
     limit = FORCED_GMAIL_ORDER_MAX_MESSAGES
-    _remove_bad_forced_order_import(client, uid)
+    _remove_bad_forced_order_imports(client, uid)
     scanned = imported = skipped = 0
     groq_rate_limited = False
     with httpx.Client(timeout=30) as http:
@@ -903,25 +911,29 @@ def import_gmail_orders(
                     candidate
                     for candidate in candidates
                     if _is_likely_product_asset(candidate)
-                ][:fallback_budget]
+                ]
                 if order_id
                 else candidates
             )
             for candidate in candidates_to_process:
                 try:
                     if order_id:
-                        analysis = _email_fashion_fallback(candidate, text)
-                        if analysis is None:
-                            analysis = _forced_order_fallback(candidate, order_id)
+                        analysis = _forced_order_fallback(candidate, order_id)
+                        logger.info(
+                            "gmail_order_candidate_checked accepted=%s hint=%r "
+                            "width=%s height=%s url=%s",
+                            analysis is not None,
+                            candidate.hint,
+                            candidate.width or "unknown",
+                            candidate.height or "unknown",
+                            candidate.source_url or "inline-image",
+                        )
                         if analysis is None:
                             rejected += 1
                             rejection_reasons.append(
-                                "best image was not hosted by the selected merchant"
+                                "image was not bound to the expected product title"
                             )
                             continue
-                        analysis = analysis.model_copy(
-                            update={"name": FORCED_GMAIL_ORDER_PRODUCT_NAME}
-                        )
                         fallback_accepted += 1
                     elif rate_limited:
                         if fallback_accepted >= fallback_budget:
@@ -949,6 +961,8 @@ def import_gmail_orders(
                         imported += 1
                         message_imported += 1
                         imported_names.append(analysis.name or candidate.hint or "Imported item")
+                        if order_id:
+                            break
                 except Exception as exc:
                     status_code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
                     if status_code == 429:
