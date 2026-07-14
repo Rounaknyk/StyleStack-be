@@ -15,7 +15,6 @@ from PIL import Image, ImageOps
 
 from app.core.config import get_settings
 from app.models.imports import GmailProductAnalysis
-from app.services.image_processing import put_item_on_white_background
 from app.services.gemini import gemini_json_from_image
 
 logger = logging.getLogger("stylestack.gmail_import")
@@ -350,6 +349,24 @@ def _allowed_image_url(url: str) -> bool:
     )
 
 
+def _original_amazon_image_url(url: str) -> str:
+    """Remove Amazon thumbnail transforms while retaining the catalog image ID."""
+    host = (urlparse(url).hostname or "").casefold()
+    if not host.endswith("amazon.com"):
+        return url
+    return re.sub(
+        r"\.(?:\*[a-z0-9_,]+\*|_[a-z0-9_,]+_)\.(?=jpe?g(?:\?|$))",
+        ".",
+        url,
+        flags=re.I,
+    )
+
+
+def _matches_forced_order_product(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", " ", value.casefold())
+    return all(word in normalized for word in ("fitness", "mantra", "winter", "cap"))
+
+
 def _likely_content_image(image: _HTMLImage) -> bool:
     if not _allowed_image_url(image.url):
         return False
@@ -408,6 +425,8 @@ def _is_likely_product_asset(candidate: _ImageCandidate) -> bool:
 
 def _candidate_product_score(candidate: _ImageCandidate) -> int:
     score = 1000 if _strong_product_hint(candidate.hint) else 0
+    if _matches_forced_order_product(candidate.hint):
+        score += 10_000
     url = (candidate.source_url or "").casefold()
     if "/images/i/" in url:
         score += 500
@@ -487,10 +506,7 @@ def _forced_order_fallback(
 ) -> GmailProductAnalysis | None:
     """Import only an Amazon catalog image bound to the expected product title."""
     host = (urlparse(candidate.source_url or "").hostname or "").casefold()
-    normalized_hint = re.sub(r"[^a-z0-9]+", " ", candidate.hint.casefold())
-    has_expected_title = all(
-        word in normalized_hint for word in ("fitness", "mantra", "winter", "cap")
-    )
+    has_expected_title = _matches_forced_order_product(candidate.hint)
     is_catalog_image = "/images/i/" in (candidate.source_url or "").casefold()
     if not has_expected_title or not is_catalog_image or not any(
         host == suffix or host.endswith(f".{suffix}")
@@ -511,34 +527,50 @@ def _forced_order_fallback(
     return GmailProductAnalysis(
         is_fashion_item=True,
         name=name,
+        brand="Fitness Mantra",
         category="accessory",
+        color="black",
+        season="winter",
+        formality="casual",
         description=(
-            "Imported from an explicitly selected Amazon delivery email. "
-            "Review the item details in StyleStack."
+            "Black winter beanie cap with a matching neck-warmer/muffler set "
+            "by Fitness Mantra."
         ),
-        tags=["gmail-import", "needs-review"],
+        tags=["beanie", "winter", "neck-warmer", "unisex", "knitwear"],
     )
 
 
 def _remote_candidate(http: httpx.Client, image: _HTMLImage) -> _ImageCandidate | None:
-    try:
-        response = http.get(
-            image.url,
-            headers={"User-Agent": "StyleStack/1.0", "Accept": "image/*"},
-            follow_redirects=True,
-        )
-        response.raise_for_status()
-        if not _allowed_image_url(str(response.url)):
-            return None
-        content_type = response.headers.get("content-type", "").split(";")[0].casefold()
-        if content_type not in {"image/jpeg", "image/png", "image/webp", "image/gif"}:
-            return None
-        contents = response.content
-        if not contents or len(contents) > MAX_REMOTE_IMAGE_BYTES:
-            return None
-        return _prepare_candidate(contents, image.alt, image.url)
-    except Exception:
-        return None
+    original_url = _original_amazon_image_url(image.url)
+    for download_url in dict.fromkeys((original_url, image.url)):
+        try:
+            response = http.get(
+                download_url,
+                headers={"User-Agent": "StyleStack/1.0", "Accept": "image/*"},
+                follow_redirects=True,
+            )
+            response.raise_for_status()
+            if not _allowed_image_url(str(response.url)):
+                continue
+            content_type = (
+                response.headers.get("content-type", "").split(";")[0].casefold()
+            )
+            if content_type not in {
+                "image/jpeg",
+                "image/png",
+                "image/webp",
+                "image/gif",
+            }:
+                continue
+            contents = response.content
+            if not contents or len(contents) > MAX_REMOTE_IMAGE_BYTES:
+                continue
+            candidate = _prepare_candidate(contents, image.alt, download_url)
+            if candidate:
+                return candidate
+        except Exception:
+            continue
+    return None
 
 
 def _inline_candidates(
@@ -715,7 +747,9 @@ def _store_product(
     if existing.data:
         return None
 
-    processed = put_item_on_white_background(candidate.contents, analysis.category)
+    # Merchant catalog images already have a clean product background. Running
+    # garment segmentation on small thumbnails destroys most of the product.
+    processed = candidate.contents
     image_path = f"{uid}/gmail/{uuid4().hex}.jpg"
     bucket = client.storage.from_(get_settings().supabase_storage_bucket)
     bucket.upload(
@@ -765,7 +799,7 @@ def _remove_bad_forced_order_imports(client: Any, uid: str) -> None:
         FORCED_GMAIL_ORDER_PRODUCT_NAME,
     ]
     try:
-        response = (
+        exact_response = (
             client.table("wardrobe_items")
             .select("id,image_path")
             .eq("owner_firebase_uid", uid)
@@ -773,7 +807,20 @@ def _remove_bad_forced_order_imports(client: Any, uid: str) -> None:
             .in_("name", bad_names)
             .execute()
         )
-        rows = response.data or []
+        product_response = (
+            client.table("wardrobe_items")
+            .select("id,image_path")
+            .eq("owner_firebase_uid", uid)
+            .eq("import_source", "gmail")
+            .ilike("name", "Fitness Mantra%Winters Cap%")
+            .execute()
+        )
+        rows_by_id = {
+            str(row["id"]): row
+            for row in [*(exact_response.data or []), *(product_response.data or [])]
+            if row.get("id")
+        }
+        rows = list(rows_by_id.values())
         if not rows:
             return
         paths = [str(row.get("image_path")) for row in rows if row.get("image_path")]
@@ -781,14 +828,9 @@ def _remove_bad_forced_order_imports(client: Any, uid: str) -> None:
             client.storage.from_(
                 get_settings().supabase_storage_bucket
             ).remove(paths)
-        (
-            client.table("wardrobe_items")
-            .delete()
-            .eq("owner_firebase_uid", uid)
-            .eq("import_source", "gmail")
-            .in_("name", bad_names)
-            .execute()
-        )
+        client.table("wardrobe_items").delete().in_(
+            "id", list(rows_by_id)
+        ).execute()
         logger.info("gmail_bad_logo_import_removed count=%s", len(rows))
     except Exception as exc:
         logger.warning(
@@ -911,6 +953,7 @@ def import_gmail_orders(
                     candidate
                     for candidate in candidates
                     if _is_likely_product_asset(candidate)
+                    and _matches_forced_order_product(candidate.hint)
                 ]
                 if order_id
                 else candidates

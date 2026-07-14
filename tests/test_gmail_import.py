@@ -16,6 +16,7 @@ from app.services.gmail_import import (
     _html_images,
     _likely_content_image,
     _log_full_test_email,
+    _original_amazon_image_url,
     _prepare_candidate,
     _preview,
     _strong_product_hint,
@@ -188,7 +189,24 @@ class GmailImportLoggingTests(unittest.TestCase):
         self.assertTrue(fallback.is_fashion_item)
         self.assertEqual(fallback.category, "accessory")
         self.assertEqual(fallback.name, "Fitness Mantra Sports Winters Cap")
-        self.assertIn("needs-review", fallback.tags)
+        self.assertEqual(fallback.brand, "Fitness Mantra")
+        self.assertEqual(fallback.color, "black")
+        self.assertEqual(fallback.season, "winter")
+        self.assertIn("neck-warmer", fallback.tags)
+
+    def test_amazon_thumbnail_url_is_rewritten_to_original_image(self) -> None:
+        self.assertEqual(
+            _original_amazon_image_url(
+                "https://m.media-amazon.com/images/I/71ETCqzBUVL.*SS90*.jpg"
+            ),
+            "https://m.media-amazon.com/images/I/71ETCqzBUVL.jpg",
+        )
+        self.assertEqual(
+            _original_amazon_image_url(
+                "https://m.media-amazon.com/images/I/41CA4IUucWL.*SR276,276*.jpg"
+            ),
+            "https://m.media-amazon.com/images/I/41CA4IUucWL.jpg",
+        )
 
     def test_explicit_order_mode_rejects_unlabelled_catalog_image(self) -> None:
         unrelated_jacket = _ImageCandidate(
