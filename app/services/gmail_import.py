@@ -6,7 +6,7 @@ from html.parser import HTMLParser
 from io import BytesIO
 import logging
 import re
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -50,10 +50,11 @@ AMAZON_DELIVERED_QUERY = (
     '-subject:"delivery attempted"'
 )
 
-IMAGE_PROMPT = """Decide whether this ecommerce delivery-email image shows a purchased fashion item suitable for a wardrobe app.
+IMAGE_PROMPT = """Analyze this verified ecommerce fashion product for a wardrobe app.
 Fashion items include clothing, shoes, bags, jewelry, watches and wearable accessories.
 Reject store logos, icons, tracking pixels, banners, models without a clearly featured product, electronics, home goods, beauty products and packaging.
-Use the email context only to improve the product name or brand; trust the image for visual attributes.
+The supplied product title is verified. Keep the identity grounded in that title and use the image for visible color, silhouette, texture, pattern, fit, neckline, sleeve length and styling details.
+Never invent an unseen material, brand, pattern or construction detail. Write a useful 2-3 sentence wardrobe description covering what the item is, its visible design, and practical styling/occasion notes.
 Return ONLY JSON:
 {
   "is_fashion_item": true_or_false,
@@ -63,8 +64,8 @@ Return ONLY JSON:
   "color": "black|white|red|blue|green|yellow|purple|pink|brown|grey|orange|beige|multicolor or null",
   "season": "summer|winter|spring|autumn|all or null",
   "formality": "formal|semi-formal|casual|sporty or null",
-  "description": "short visual description or null",
-  "tags": ["up to 5 useful style/material tags"]
+  "description": "accurate detailed 2-3 sentence description, maximum 450 characters",
+  "tags": ["exactly 5 concise searchable tags for material/style/fit/pattern/detail"]
 }
 """
 
@@ -640,8 +641,53 @@ def _amazon_product_from_title(
         None,
     )
     brand_match = re.match(r"\s*([^|,(]{2,60}?)(?:®|™)", name)
-    brand = brand_match.group(1).strip() if brand_match else None
-    season = "winter" if any(term in lowered for term in ("winter", "woolen", "thermal")) else "all"
+    if not brand_match:
+        brand_match = re.match(
+            r"\s*([a-z0-9& .'-]{2,40}?)(?=\s+(?:men|women|boys|girls|unisex)(?:'s|’s|\s))",
+            name,
+            re.I,
+        )
+    brand = brand_match.group(1).strip(" -") if brand_match else None
+    material = next(
+        (
+            term
+            for term in (
+                "cotton",
+                "linen",
+                "denim",
+                "wool",
+                "woolen",
+                "acrylic",
+                "fleece",
+                "leather",
+                "polyester",
+                "silk",
+                "knit",
+            )
+            if term in lowered
+        ),
+        None,
+    )
+    sleeve = next(
+        (term for term in ("full sleeve", "long sleeve", "short sleeve", "sleeveless") if term in lowered),
+        None,
+    )
+    neckline = next(
+        (term for term in ("high neck", "crew neck", "round neck", "v-neck", "polo neck") if term in lowered),
+        None,
+    )
+    gender = next(
+        (label for term, label in (("men's", "men's"), ("women's", "women's"), ("unisex", "unisex")) if term in lowered),
+        None,
+    )
+    season = (
+        "winter"
+        if any(
+            term in lowered
+            for term in ("winter", "woolen", "thermal", "high neck")
+        )
+        else "all"
+    )
     if category == "accessory" and any(term in lowered for term in ("muffler", "neck warmer")):
         description = " ".join(
             part
@@ -662,14 +708,19 @@ def _amazon_product_from_title(
             "accessory": keyword,
             "other": "fashion item",
         }[category]
-        description = " ".join(
-            part
-            for part in (
-                color.title() if color else None,
-                label,
-                f"by {brand}." if brand else "from a confirmed Amazon delivery.",
-            )
-            if part
+        attributes = [
+            gender,
+            color,
+            material,
+            sleeve,
+            neckline,
+            label,
+        ]
+        article = "An" if attributes and attributes[0] and attributes[0][0] in "aeiou" else "A"
+        description = (
+            f"{article} {' '.join(part for part in attributes if part)}"
+            f"{' by ' + brand if brand else ''}. "
+            f"Designed for casual {('cool-weather layering' if season == 'winter' else 'everyday styling')}."
         )
     tags = [keyword]
     tag_evidence = {
@@ -681,6 +732,9 @@ def _amazon_product_from_title(
     }
     for tag, evidence in tag_evidence.items():
         if any(term in lowered for term in evidence) and tag not in tags:
+            tags.append(tag)
+    for tag in (material, sleeve, neckline, gender):
+        if tag and tag not in tags:
             tags.append(tag)
     if color and color not in tags:
         tags.append(color)
@@ -695,6 +749,65 @@ def _amazon_product_from_title(
         description=description,
         tags=tags[:5],
     )
+
+
+def _enrich_amazon_product_with_ai(
+    candidate: _ImageCandidate,
+    verified: GmailProductAnalysis,
+) -> tuple[GmailProductAnalysis, bool]:
+    """Enrich one verified purchase; never let AI change its identity."""
+    context = (
+        f"Verified purchased product title: {verified.name}. "
+        f"Verified brand: {verified.brand or 'unknown'}. "
+        f"Verified category: {verified.category or 'unknown'}. "
+        "Describe only this product; ignore any recommendation items."
+    )
+    try:
+        ai = _analyze_product_image(candidate, context)
+        description = (ai.description or "").strip()
+        if len(description) < 50:
+            description = verified.description or description
+        tags: list[str] = []
+        for raw_tag in [*ai.tags, *verified.tags]:
+            tag = re.sub(r"\s+", " ", raw_tag).strip().casefold()
+            if tag and tag not in tags:
+                tags.append(tag)
+            if len(tags) == 5:
+                break
+        enriched = verified.model_copy(
+            update={
+                # Explicit attributes in the purchased title are stronger
+                # evidence than vision guesses. AI fills only missing values.
+                "color": verified.color or ai.color,
+                "season": (
+                    ai.season
+                    if verified.season in (None, "all") and ai.season
+                    else verified.season
+                ),
+                "formality": ai.formality or verified.formality,
+                "description": description,
+                "tags": tags,
+            }
+        )
+        logger.info(
+            "gmail_product_ai_enriched name=%r tags=%s",
+            enriched.name,
+            ",".join(tags),
+        )
+        return enriched, True
+    except Exception as exc:
+        status_code = (
+            exc.response.status_code
+            if isinstance(exc, httpx.HTTPStatusError)
+            else None
+        )
+        logger.warning(
+            "gmail_product_ai_fallback name=%r error_type=%s status=%s",
+            verified.name,
+            type(exc).__name__,
+            status_code or "none",
+        )
+        return verified, False
 
 
 def _remote_candidate(http: httpx.Client, image: _HTMLImage) -> _ImageCandidate | None:
@@ -952,13 +1065,37 @@ def _analyze_product_image(candidate: _ImageCandidate, email_text: str) -> Gmail
     raise RuntimeError("No AI vision provider is configured")
 
 
+def _normalized_tags(*tag_groups: list[str]) -> list[str]:
+    tags: list[str] = []
+    for raw_tag in (tag for group in tag_groups for tag in group):
+        tag = re.sub(r"\s+", " ", raw_tag).strip().casefold()
+        if tag and tag not in tags:
+            tags.append(tag)
+        if len(tags) == 5:
+            break
+    return tags
+
+
+def _is_generated_gmail_description(description: Any) -> bool:
+    if not isinstance(description, str) or not description.strip():
+        return True
+    normalized = description.strip().casefold()
+    generated_markers = (
+        "from a confirmed amazon delivery",
+        "imported from a delivered ecommerce order email",
+        "imported from an explicitly selected amazon delivery email",
+        "ai details are pending",
+    )
+    return any(marker in normalized for marker in generated_markers)
+
+
 def _store_product(
     client: Any,
     uid: str,
     source_id: str,
     candidate: _ImageCandidate,
     analysis: GmailProductAnalysis,
-) -> str | None:
+) -> Literal["created", "updated"]:
     category = analysis.category or "other"
     color = analysis.color
     name = (
@@ -969,26 +1106,72 @@ def _store_product(
     external_id = f"amazon:{source_id}:{candidate.digest[:20]}"
     existing = (
         client.table("wardrobe_items")
-        .select("id")
+        .select(
+            "id,brand,color,season,formality,description,tags,source_external_id"
+        )
         .eq("owner_firebase_uid", uid)
         .eq("import_source", "gmail")
         .eq("source_external_id", external_id)
         .limit(1)
         .execute()
     )
-    if existing.data:
-        return None
-    legacy_existing = (
-        client.table("wardrobe_items")
-        .select("id")
-        .eq("owner_firebase_uid", uid)
-        .eq("import_source", "gmail")
-        .eq("name", name[:200])
-        .limit(1)
-        .execute()
+    existing_row = existing.data[0] if existing.data else None
+    if existing_row is None:
+        legacy_existing = (
+            client.table("wardrobe_items")
+            .select(
+                "id,brand,color,season,formality,description,tags,source_external_id"
+            )
+            .eq("owner_firebase_uid", uid)
+            .eq("import_source", "gmail")
+            .eq("name", name[:200])
+            .limit(1)
+            .execute()
+        )
+        existing_row = legacy_existing.data[0] if legacy_existing.data else None
+
+    tags = _normalized_tags(
+        analysis.tags,
+        list(existing_row.get("tags") or []) if existing_row else [],
     )
-    if legacy_existing.data:
-        return None
+    ai_payload = {
+        "tagged": True,
+        "ai_tag_status": "completed",
+        "ai_category": analysis.category,
+        "ai_color": analysis.color,
+        "ai_season": analysis.season,
+        "ai_formality": analysis.formality,
+        "ai_description": analysis.description,
+        "tags": tags,
+    }
+    if existing_row is not None:
+        update_payload = dict(ai_payload)
+        if _is_generated_gmail_description(existing_row.get("description")):
+            update_payload["description"] = analysis.description
+        for field, value in (
+            ("brand", analysis.brand),
+            ("color", analysis.color),
+            ("formality", analysis.formality),
+        ):
+            if not existing_row.get(field) and value:
+                update_payload[field] = value
+        if not existing_row.get("season") and analysis.season:
+            update_payload["season"] = [analysis.season]
+        if not existing_row.get("source_external_id"):
+            update_payload["source_external_id"] = external_id
+        (
+            client.table("wardrobe_items")
+            .update(update_payload)
+            .eq("id", existing_row["id"])
+            .eq("owner_firebase_uid", uid)
+            .execute()
+        )
+        logger.info(
+            "gmail_existing_product_enriched item_id=%s name=%r",
+            existing_row["id"],
+            name,
+        )
+        return "updated"
 
     # Merchant catalog images already have a clean product background. Running
     # garment segmentation on small thumbnails destroys most of the product.
@@ -1009,21 +1192,15 @@ def _store_product(
         "season": [analysis.season] if analysis.season else [],
         "formality": analysis.formality,
         "description": analysis.description,
-        "tags": list(dict.fromkeys(tag.strip().lower() for tag in analysis.tags if tag.strip()))[:5],
+        "tags": tags,
         "image_path": image_path,
-        "tagged": True,
-        "ai_tag_status": "completed",
-        "ai_category": analysis.category,
-        "ai_color": analysis.color,
-        "ai_season": analysis.season,
-        "ai_formality": analysis.formality,
-        "ai_description": analysis.description,
+        **ai_payload,
         "import_source": "gmail",
         "source_external_id": external_id,
     }
     try:
         client.table("wardrobe_items").insert(row).execute()
-        return image_path
+        return "created"
     except Exception:
         try:
             bucket.remove([image_path])
@@ -1092,6 +1269,8 @@ def import_gmail_orders(
                 order_id,
             )
             message_imported = 0
+            message_created = 0
+            message_updated = 0
             rejected = 0
             failed = 0
             imported_names: list[str] = []
@@ -1106,24 +1285,33 @@ def import_gmail_orders(
                 if message_imported >= item_budget:
                     break
                 try:
-                    analysis = _amazon_product_from_title(candidate)
-                    if analysis is None or not analysis.is_fashion_item:
+                    verified = _amazon_product_from_title(candidate)
+                    if verified is None or not verified.is_fashion_item:
                         rejected += 1
                         rejection_reasons.append(
                             "delivered product was not a supported fashion item"
                         )
                         continue
-                    stored_path = _store_product(
+                    analysis, _ = _enrich_amazon_product_with_ai(
+                        candidate,
+                        verified,
+                    )
+                    storage_result = _store_product(
                         client,
                         uid,
                         order_id or message_id,
                         candidate,
                         analysis,
                     )
-                    if stored_path:
-                        imported += 1
-                        message_imported += 1
-                        imported_names.append(analysis.name or candidate.hint or "Imported item")
+                    imported += 1
+                    message_imported += 1
+                    if storage_result == "created":
+                        message_created += 1
+                    else:
+                        message_updated += 1
+                    imported_names.append(
+                        analysis.name or candidate.hint or "Imported item"
+                    )
                 except Exception as exc:
                     failed += 1
                     logger.warning(
@@ -1137,7 +1325,10 @@ def import_gmail_orders(
                 skipped += 1
             if get_settings().gmail_import_log_email_previews:
                 result = (
-                    f"Imported {message_imported}: {', '.join(imported_names)}"
+                    (
+                        f"Created {message_created}, enriched {message_updated}: "
+                        f"{', '.join(imported_names)}"
+                    )
                     if message_imported
                     else "No product imported"
                 )
@@ -1172,7 +1363,7 @@ def import_gmail_orders(
             "CLOSET SYNC — COMPLETE",
             [
                 ("Emails", str(scanned)),
-                ("Items added", str(imported)),
+                ("Items added/enriched", str(imported)),
                 ("No item", str(skipped)),
             ],
         )

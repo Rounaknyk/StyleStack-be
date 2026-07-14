@@ -1,16 +1,18 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from io import BytesIO
 import base64
+from types import SimpleNamespace
 
 from PIL import Image
 
-from app.models.imports import GmailImportRequest
+from app.models.imports import GmailImportRequest, GmailProductAnalysis
 from app.services.gmail_import import (
     _EmailImageParser,
     _ImageCandidate,
     _amazon_order_id,
     _amazon_product_from_title,
+    _enrich_amazon_product_with_ai,
     _email_fashion_fallback,
     _delivered_item_count,
     _header,
@@ -18,6 +20,7 @@ from app.services.gmail_import import (
     _is_delivered_amazon_message,
     _is_amazon_order_thumbnail_url,
     _is_transactional_amazon_product,
+    _is_generated_gmail_description,
     import_gmail_orders,
     _likely_content_image,
     _log_full_test_email,
@@ -25,6 +28,7 @@ from app.services.gmail_import import (
     _prepare_candidate,
     _preview,
     _strong_product_hint,
+    _store_product,
 )
 
 
@@ -205,6 +209,149 @@ class GmailImportLoggingTests(unittest.TestCase):
         self.assertEqual(fallback.season, "winter")
         self.assertIn("neck-warmer", fallback.tags)
 
+    def test_amazon_title_builds_detailed_grounded_fallback(self) -> None:
+        candidate = _ImageCandidate(
+            contents=b"image",
+            content_type="image/jpeg",
+            hint="CHKOKKO Men's Full Sleeve Cotton High Neck T-Shirt (White)",
+            digest="shirt",
+            source_url="https://m.media-amazon.com/images/I/shirt.jpg",
+            email_width=90,
+            email_height=90,
+            is_order_thumbnail=True,
+        )
+
+        analysis = _amazon_product_from_title(candidate)
+
+        self.assertIsNotNone(analysis)
+        assert analysis is not None
+        self.assertEqual(analysis.brand, "CHKOKKO")
+        self.assertEqual(analysis.color, "white")
+        self.assertEqual(analysis.season, "winter")
+        self.assertIn("cotton", analysis.description or "")
+        self.assertIn("full sleeve", analysis.description or "")
+        self.assertIn("high neck", analysis.description or "")
+
+    def test_ai_enrichment_preserves_verified_product_identity(self) -> None:
+        candidate = _ImageCandidate(
+            contents=b"image",
+            content_type="image/jpeg",
+            hint="CHKOKKO Men's Full Sleeve Cotton High Neck T-Shirt (White)",
+            digest="shirt",
+            source_url="https://m.media-amazon.com/images/I/shirt.jpg",
+            email_width=90,
+            email_height=90,
+            is_order_thumbnail=True,
+        )
+        verified = _amazon_product_from_title(candidate)
+        assert verified is not None
+        ai_result = GmailProductAnalysis(
+            is_fashion_item=True,
+            name="Incorrect invented sweater",
+            brand="Incorrect brand",
+            category="jacket",
+            color="black",
+            season="all",
+            formality="casual",
+            description=(
+                "A clean white high-neck top with long sleeves and a streamlined "
+                "silhouette. It works well as a casual winter base layer or as a "
+                "minimal standalone top."
+            ),
+            tags=[
+                "high neck",
+                "full sleeve",
+                "minimal",
+                "layering",
+                "solid",
+            ],
+        )
+
+        with patch(
+            "app.services.gmail_import._analyze_product_image",
+            return_value=ai_result,
+        ):
+            enriched, used_ai = _enrich_amazon_product_with_ai(
+                candidate,
+                verified,
+            )
+
+        self.assertTrue(used_ai)
+        self.assertEqual(enriched.name, verified.name)
+        self.assertEqual(enriched.brand, "CHKOKKO")
+        self.assertEqual(enriched.category, "shirt")
+        self.assertEqual(enriched.color, "white")
+        self.assertEqual(enriched.season, "winter")
+        self.assertIn("streamlined silhouette", enriched.description or "")
+        self.assertEqual(len(enriched.tags), 5)
+
+    def test_old_generated_description_is_safe_to_upgrade(self) -> None:
+        self.assertTrue(
+            _is_generated_gmail_description(
+                "White shirt from a confirmed Amazon delivery."
+            )
+        )
+        self.assertFalse(
+            _is_generated_gmail_description(
+                "My favorite white cotton top for office layering."
+            )
+        )
+
+    def test_existing_generic_import_is_updated_without_uploading_again(self) -> None:
+        client = MagicMock()
+        table = client.table.return_value
+        table.select.return_value = table
+        table.eq.return_value = table
+        table.limit.return_value = table
+        table.update.return_value = table
+        table.execute.return_value = SimpleNamespace(
+            data=[
+                {
+                    "id": "item-1",
+                    "brand": "CHKOKKO",
+                    "color": "white",
+                    "season": ["winter"],
+                    "formality": "casual",
+                    "description": "White shirt from a confirmed Amazon delivery.",
+                    "tags": ["shirt", "white"],
+                    "source_external_id": "amazon:order-1:shirt",
+                }
+            ]
+        )
+        candidate = _ImageCandidate(
+            contents=b"image",
+            content_type="image/jpeg",
+            hint="CHKOKKO Men's Full Sleeve Cotton High Neck T-Shirt (White)",
+            digest="shirt",
+            source_url="https://m.media-amazon.com/images/I/shirt.jpg",
+            email_width=90,
+            email_height=90,
+            is_order_thumbnail=True,
+        )
+        analysis = GmailProductAnalysis(
+            is_fashion_item=True,
+            name=candidate.hint,
+            brand="CHKOKKO",
+            category="shirt",
+            color="white",
+            season="winter",
+            formality="casual",
+            description=(
+                "A white cotton high-neck shirt with full sleeves and a clean, "
+                "minimal silhouette. It is suited to casual winter layering."
+            ),
+            tags=["cotton", "high neck", "full sleeve", "minimal", "layering"],
+        )
+
+        result = _store_product(client, "uid", "order-1", candidate, analysis)
+
+        self.assertEqual(result, "updated")
+        client.storage.from_.assert_not_called()
+        update_payload = table.update.call_args.args[0]
+        self.assertIn("minimal silhouette", update_payload["description"])
+        self.assertEqual(update_payload["ai_category"], "shirt")
+        self.assertEqual(len(update_payload["tags"]), 5)
+
     def test_amazon_thumbnail_url_is_rewritten_to_original_image(self) -> None:
         self.assertTrue(
             _is_amazon_order_thumbnail_url(
@@ -344,7 +491,7 @@ class GmailImportLoggingTests(unittest.TestCase):
         request = GmailImportRequest(access_token="x" * 20)
         self.assertFalse(hasattr(request, "order_id"))
 
-    def test_import_orchestration_skips_shipped_mail_and_never_calls_ai(self) -> None:
+    def test_import_orchestration_skips_shipped_mail_and_enriches_product(self) -> None:
         delivered_payload = {
             "headers": [
                 {
@@ -378,6 +525,19 @@ class GmailImportLoggingTests(unittest.TestCase):
             email_height=90,
             is_order_thumbnail=True,
         )
+        ai_result = GmailProductAnalysis(
+            is_fashion_item=True,
+            category="accessory",
+            color="black",
+            season="winter",
+            formality="casual",
+            description=(
+                "A black knitted beanie and matching neck warmer with a soft, "
+                "insulating texture. The coordinated set is suited to casual "
+                "cold-weather outfits and everyday outdoor wear."
+            ),
+            tags=["knitted", "beanie", "neck warmer", "winter", "matching set"],
+        )
 
         def gmail_get(_http, path, _token, **_params):
             if path == "messages":
@@ -394,15 +554,23 @@ class GmailImportLoggingTests(unittest.TestCase):
                 "app.services.gmail_import._amazon_order_content",
                 return_value=("delivered", [candidate], 1, 1, ["m.media-amazon.com"]),
             ),
-            patch("app.services.gmail_import._store_product", return_value="path"),
+            patch(
+                "app.services.gmail_import._store_product",
+                return_value="created",
+            ) as store,
             patch(
                 "app.services.gmail_import._analyze_product_image",
-                side_effect=AssertionError("AI must not run for Gmail import"),
-            ),
+                return_value=ai_result,
+            ) as analyze,
         ):
             result = import_gmail_orders(object(), "uid", "x" * 20, 25)
 
         self.assertEqual(result, (2, 1, 1))
+        analyze.assert_called_once()
+        stored_analysis = store.call_args.args[4]
+        self.assertIn("Fitness Mantra", stored_analysis.name or "")
+        self.assertIn("insulating texture", stored_analysis.description or "")
+        self.assertEqual(stored_analysis.tags[:2], ["knitted", "beanie"])
         query = get.call_args_list[0].kwargs["q"]
         self.assertIn('subject:"Delivered:"', query)
 
