@@ -19,7 +19,11 @@ def sync_gmail_orders(payload: GmailImportRequest, current_user: CurrentUser) ->
     ensure_profile(client, current_user)
     try:
         scanned, imported, skipped = import_gmail_orders(
-            client, current_user["uid"], payload.access_token, payload.max_messages
+            client,
+            current_user["uid"],
+            payload.access_token,
+            payload.max_messages,
+            order_id=payload.order_id,
         )
         logger.debug(
             "gmail_import_completed uid=%s scanned=%s imported=%s skipped=%s",

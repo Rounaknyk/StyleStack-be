@@ -237,6 +237,55 @@ def _log_block(title: str, rows: list[tuple[str, str]]) -> None:
     logger.info("\n%s", "\n".join(lines))
 
 
+def _log_full_test_email(message: dict[str, Any]) -> None:
+    """Print complete readable message content only for explicit order testing."""
+    payload = message.get("payload", {})
+    lines = [
+        "",
+        "=" * 96,
+        "CLOSET SYNC — FULL TEST EMAIL CONTENT",
+        "-" * 96,
+        f"Message ID : {message.get('id') or ''}",
+        f"Thread ID  : {message.get('threadId') or ''}",
+        "",
+        "HEADERS",
+        "-" * 96,
+    ]
+    for header in payload.get("headers", []) or []:
+        lines.append(f"{header.get('name', '')}: {header.get('value', '')}")
+
+    lines.extend(["", "MIME PARTS", "-" * 96])
+    for index, part in enumerate(_walk_parts(payload), start=1):
+        mime = str(part.get("mimeType", ""))
+        filename = str(part.get("filename") or "")
+        body = part.get("body", {}) or {}
+        lines.append(
+            f"[Part {index}] mime={mime or 'unknown'} "
+            f"filename={filename or 'none'} size={body.get('size', 0)} "
+            f"attachment_id={body.get('attachmentId') or 'none'}"
+        )
+        data = body.get("data")
+        if data and mime.casefold() in {"text/plain", "text/html"}:
+            try:
+                decoded = _decode_part(data).decode("utf-8", errors="replace")
+                lines.extend([decoded, "-" * 96])
+            except Exception as exc:
+                lines.append(f"[Could not decode body: {type(exc).__name__}]")
+
+    lines.extend(["", "IMAGE REFERENCES", "-" * 96])
+    references = _html_images(payload)
+    if not references:
+        lines.append("none")
+    for index, image in enumerate(references, start=1):
+        lines.append(
+            f"[{index}] url={image.url}\n"
+            f"    alt={image.alt or 'none'} width={image.width or 'unknown'} "
+            f"height={image.height or 'unknown'}"
+        )
+    lines.append("=" * 96)
+    logger.info("\n%s", "\n".join(lines))
+
+
 def _gmail_get(client: httpx.Client, path: str, token: str, **params: Any) -> dict[str, Any]:
     response = client.get(
         f"{GMAIL_API}/{path}",
@@ -342,6 +391,12 @@ def _candidate_product_score(candidate: _ImageCandidate) -> int:
     url = (candidate.source_url or "").casefold()
     if "/images/i/" in url:
         score += 500
+    if candidate.width and candidate.height:
+        aspect = candidate.width / candidate.height
+        if 0.65 <= aspect <= 1.55:
+            score += 300
+        elif 0.4 <= aspect <= 2.2:
+            score += 120
     pixels = (candidate.width or 0) * (candidate.height or 0)
     return score + min(400, pixels // 5000)
 
@@ -404,6 +459,39 @@ def _email_fashion_fallback(
         category=category,  # type: ignore[arg-type]
         description="Imported from a delivered ecommerce order email; AI details are pending.",
         tags=["gmail-import"],
+    )
+
+
+def _forced_order_fallback(
+    candidate: _ImageCandidate, order_id: str
+) -> GmailProductAnalysis | None:
+    """Import the best image in explicit single-order test mode without AI."""
+    host = (urlparse(candidate.source_url or "").hostname or "").casefold()
+    if not any(
+        host == suffix or host.endswith(f".{suffix}")
+        for suffix in (
+            "media-amazon.com",
+            "images-amazon.com",
+            "ssl-images-amazon.com",
+            "amazon.in",
+            "amazon.com",
+        )
+    ):
+        return None
+    name = (
+        candidate.hint.strip()
+        if _strong_product_hint(candidate.hint)
+        else f"Amazon order {order_id} item"
+    )
+    return GmailProductAnalysis(
+        is_fashion_item=True,
+        name=name,
+        category="other",
+        description=(
+            "Imported from an explicitly selected Amazon delivery email. "
+            "Review the item details in StyleStack."
+        ),
+        tags=["gmail-import", "needs-review"],
     )
 
 
@@ -645,7 +733,14 @@ def _store_product(
         raise
 
 
-def import_gmail_orders(client: Any, uid: str, access_token: str, limit: int) -> tuple[int, int, int]:
+def import_gmail_orders(
+    client: Any,
+    uid: str,
+    access_token: str,
+    limit: int,
+    *,
+    order_id: str | None = None,
+) -> tuple[int, int, int]:
     scanned = imported = skipped = 0
     groq_rate_limited = False
     with httpx.Client(timeout=30) as http:
@@ -654,8 +749,17 @@ def import_gmail_orders(client: Any, uid: str, access_token: str, limit: int) ->
         merchant_matches: dict[str, int] = {}
         merchant_refs: dict[str, list[dict[str, Any]]] = {}
         for merchant, query in MERCHANT_QUERIES.items():
+            if order_id and merchant != "amazon":
+                merchant_matches[merchant] = 0
+                merchant_refs[merchant] = []
+                continue
+            effective_query = f'{query} "{order_id}"' if order_id else query
             listing = _gmail_get(
-                http, "messages", access_token, q=query, maxResults=limit
+                http,
+                "messages",
+                access_token,
+                q=effective_query,
+                maxResults=1 if order_id else limit,
             )
             matches = listing.get("messages", []) or []
             merchant_matches[merchant] = len(matches)
@@ -696,6 +800,8 @@ def import_gmail_orders(client: Any, uid: str, access_token: str, limit: int) ->
                 continue
             scanned += 1
             message = _gmail_get(http, f"messages/{message_id}", access_token, format="full")
+            if order_id:
+                _log_full_test_email(message)
             payload = message.get("payload", {})
             (
                 text,
@@ -712,9 +818,21 @@ def import_gmail_orders(client: Any, uid: str, access_token: str, limit: int) ->
             rejection_reasons: list[str] = []
             fallback_accepted = 0
             fallback_budget = _delivered_item_count(_header(payload, "Subject"))
-            for candidate in candidates:
+            candidates_to_process = candidates[:fallback_budget] if order_id else candidates
+            for candidate in candidates_to_process:
                 try:
-                    if rate_limited:
+                    if order_id:
+                        analysis = _email_fashion_fallback(candidate, text)
+                        if analysis is None:
+                            analysis = _forced_order_fallback(candidate, order_id)
+                        if analysis is None:
+                            rejected += 1
+                            rejection_reasons.append(
+                                "best image was not hosted by the selected merchant"
+                            )
+                            continue
+                        fallback_accepted += 1
+                    elif rate_limited:
                         if fallback_accepted >= fallback_budget:
                             rejected += 1
                             rejection_reasons.append("extra image beyond delivered item count")
@@ -782,6 +900,7 @@ def import_gmail_orders(client: Any, uid: str, access_token: str, limit: int) ->
                     f"CLOSET SYNC — EMAIL {email_index} OF {len(message_refs[:limit])}",
                     [
                         ("Subject", _header(payload, "Subject")),
+                        ("Test order", order_id or "all eligible orders"),
                         ("From", _header(payload, "From")),
                         ("Preview", _preview(text)),
                         ("Images", f"{len(candidates)} candidate(s)"),

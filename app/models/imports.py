@@ -6,6 +6,10 @@ from pydantic import BaseModel, Field
 class GmailImportRequest(BaseModel):
     access_token: str = Field(min_length=20, max_length=4096)
     max_messages: int = Field(default=25, ge=1, le=50)
+    order_id: str | None = Field(
+        default=None,
+        pattern=r"^\d{3}-\d{7}-\d{7}$",
+    )
 
 
 class GmailImportResponse(BaseModel):
