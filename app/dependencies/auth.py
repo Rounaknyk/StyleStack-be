@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Annotated
 
 from fastapi import Depends, HTTPException, status
@@ -7,6 +8,7 @@ from firebase_admin import auth
 from app.core.firebase import verify_firebase_token
 
 bearer_scheme = HTTPBearer(auto_error=False)
+logger = logging.getLogger("stylestack.auth")
 
 
 def get_current_user(
@@ -25,7 +27,9 @@ def get_current_user(
         raise unauthorized
 
     try:
-        return verify_firebase_token(credentials.credentials)
+        decoded_token = verify_firebase_token(credentials.credentials)
+        logger.debug("firebase_user_authenticated uid=%s", decoded_token["uid"])
+        return decoded_token
     except (
         auth.InvalidIdTokenError,
         auth.ExpiredIdTokenError,
@@ -33,8 +37,8 @@ def get_current_user(
         auth.UserDisabledError,
         ValueError,
     ) as exc:
+        logger.warning("firebase_authentication_failed reason=%s", type(exc).__name__)
         raise unauthorized from exc
 
 
 CurrentUser = Annotated[dict[str, Any], Depends(get_current_user)]
-

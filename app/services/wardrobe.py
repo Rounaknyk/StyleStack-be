@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -5,8 +6,15 @@ from supabase import Client
 
 from app.core.config import get_settings
 
+logger = logging.getLogger("stylestack.wardrobe")
+
 
 def database_error(operation: str, exc: Exception) -> HTTPException:
+    logger.error(
+        "database_operation_failed operation=%s error_type=%s",
+        operation.replace(" ", "_"),
+        type(exc).__name__,
+    )
     return HTTPException(
         status_code=status.HTTP_502_BAD_GATEWAY,
         detail=f"Unable to {operation} because the data service is unavailable",
@@ -24,6 +32,7 @@ def ensure_profile(client: Client, user: dict[str, Any]) -> None:
         client.table("profiles").upsert(
             profile, on_conflict="firebase_uid"
         ).execute()
+        logger.debug("profile_synchronized uid=%s", user["uid"])
     except Exception as exc:
         raise database_error("create the user profile", exc) from exc
 

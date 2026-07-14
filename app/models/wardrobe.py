@@ -1,8 +1,11 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
+
+TagStatus = Literal["pending", "processing", "completed", "failed"]
 
 
 class WardrobeItemResponse(BaseModel):
@@ -16,6 +19,8 @@ class WardrobeItemResponse(BaseModel):
     size: str | None = None
     season: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
+    description: str | None = None
+    formality: str | None = None
     notes: str | None = None
     purchase_date: date | None = None
     purchase_price: Decimal | None = None
@@ -23,6 +28,14 @@ class WardrobeItemResponse(BaseModel):
     image_path: str | None = None
     image_url: str | None = None
     is_favorite: bool
+    tagged: bool = False
+    ai_tag_status: TagStatus = "pending"
+    ai_category: str | None = None
+    ai_color: str | None = None
+    ai_season: str | None = None
+    ai_formality: str | None = None
+    ai_description: str | None = None
+    wear_count: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -36,6 +49,8 @@ class WardrobeItemUpdate(BaseModel):
     size: str | None = Field(default=None, max_length=50)
     season: list[str] | None = None
     tags: list[str] | None = None
+    description: str | None = Field(default=None, max_length=500)
+    formality: str | None = Field(default=None, max_length=50)
     notes: str | None = Field(default=None, max_length=2000)
     purchase_date: date | None = None
     purchase_price: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=2)
@@ -67,3 +82,7 @@ class WearLogResponse(BaseModel):
     worn_at: datetime
     notes: str | None = None
     created_at: datetime
+
+
+class TagStatusResponse(BaseModel):
+    status: TagStatus

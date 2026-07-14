@@ -71,6 +71,18 @@ uvicorn app.main:app --reload
 
 Open `http://localhost:8000/docs` for Swagger UI.
 
+### Local logs
+
+The backend writes authentication, request, wardrobe-item, upload, deletion, and wear-log events to the terminal running Uvicorn. Firebase tokens, service keys, image contents, and user emails are never logged. A successful protected request looks like:
+
+```text
+2026-07-11 13:45:26 | INFO | stylestack.auth | firebase_user_authenticated uid=...
+2026-07-11 13:45:26 | INFO | stylestack.wardrobe | wardrobe_items_listed uid=... count=2
+2026-07-11 13:45:26 | INFO | stylestack.api | request_completed method=GET path=/api/v1/wardrobe/items status=200 duration_ms=125.4
+```
+
+Set `DEBUG=true` in `.env` for additional development detail. Keep it `false` in production.
+
 ### Endpoints
 
 Health check (public):
@@ -99,6 +111,17 @@ Expected response:
 ```
 
 ### Wardrobe API
+
+Before a new wardrobe image is stored, StyleStack automatically isolates the
+garment with the lightweight `u2netp` model, corrects phone-camera orientation,
+and composites it onto a pure white JPEG background. The model downloads once
+to the runtime cache on first use. Configure it with:
+
+```env
+BACKGROUND_REMOVAL_ENABLED=true
+BACKGROUND_REMOVAL_MODEL=u2netp
+FASHION_SEGMENTATION_ENABLED=true
+```
 
 Every wardrobe endpoint requires a Firebase ID token in the `Authorization` header. The API always combines the requested item ID with the verified Firebase UID, so another user's item is returned as `404` rather than exposing its existence.
 
@@ -134,6 +157,7 @@ GET    /api/v1/wardrobe/items/{id}
 PUT    /api/v1/wardrobe/items/{id}
 DELETE /api/v1/wardrobe/items/{id}
 POST   /api/v1/wardrobe/items/{id}/wear
+GET    /api/v1/wardrobe/items/{id}/tag-status
 ```
 
 The update endpoint accepts a JSON object containing any editable fields. Wear logging accepts optional JSON such as:
@@ -144,6 +168,107 @@ The update endpoint accepts a JSON object containing any editable fields. Wear l
   "notes": "Office event"
 }
 ```
+
+### Background AI tagging
+
+After an upload is stored and its database record is created, the API immediately places an image-tagging job on an in-process queue and returns the item with `ai_tag_status: "pending"`. A daemon worker changes the status to `processing`, calls Groq Vision, stores the AI fields separately from user-editable fields, and finishes with `completed` or `failed`.
+
+Configure Groq in `.env`:
+
+```env
+GROQ_API_KEY=your-groq-api-key
+GEMINI_API_KEY=your-gemini-api-key
+GEMINI_VISION_MODEL=gemini-flash-latest
+GROQ_VISION_MODEL=qwen/qwen3.6-27b
+GROQ_REQUEST_TIMEOUT_SECONDS=30
+```
+
+Poll a user-owned item without blocking uploads:
+
+```bash
+curl http://localhost:8000/api/v1/wardrobe/items/ITEM_ID/tag-status \
+  -H "Authorization: Bearer YOUR_FIREBASE_ID_TOKEN"
+```
+
+Response:
+
+```json
+{"status":"pending"}
+```
+
+Possible statuses are `pending`, `processing`, `completed`, and `failed`. AI failures are retried up to three times. Run the updated `supabase/schema.sql` before uploading new items.
+
+The Week 1 queue is intentionally process-local: queued jobs are lost if the process restarts, and multiple Gunicorn workers each have their own queue. Move to a durable queue such as Redis before production workloads require guaranteed processing.
+
+### Outfit Selfies
+
+The mobile app can photograph a worn outfit, match visible pieces against the
+signed-in user's wardrobe, let the user correct every match, and then write the
+confirmed pieces to `wear_logs`. Accepted selfies are retained in private
+Supabase Storage and shown in the Profile outfit-history timeline. Low-quality
+photos are rejected before anything is saved.
+
+```text
+POST /api/v1/wardrobe/outfit-selfies/analyze
+POST /api/v1/wardrobe/outfit-selfies/{selfie_id}/confirm
+DELETE /api/v1/wardrobe/outfit-selfies/{selfie_id}
+GET  /api/v1/wardrobe/outfit-selfies/history
+```
+
+AI-generated `ai_visual_tags` are intentionally separate from editable tags.
+They describe stable visual details used to match newly uploaded wardrobe items
+in future selfies. Run the latest `supabase/schema.sql` once before testing this
+feature; it adds the hidden tags and the two outfit-selfie tables.
+
+### Gmail Closet Sync
+
+Closet Sync searches delivery confirmations from Amazon, Myntra, Flipkart, and
+Ajio. It parses remote HTML images and inline Gmail attachments, filters tiny
+assets and unapproved hosts, deduplicates identical bytes, and uses vision AI
+to reject logos, banners, tracking assets, and non-fashion products. Accepted
+items are placed on a white background, uploaded to private Supabase Storage,
+and inserted into `wardrobe_items`. Email HTML and temporary image bytes are
+not persisted.
+
+### Weather-aware outfit API
+
+Set these values in `.env`:
+
+```env
+OPENWEATHER_API_KEY=your-openweather-api-key
+OPENWEATHER_BASE_URL=https://api.openweathermap.org/data/2.5
+```
+
+Generate an outfit using owned wardrobe items, current weather, occasion, and wear history:
+
+```http
+POST /api/v1/outfits/suggest
+Authorization: Bearer <firebase-id-token>
+Content-Type: application/json
+
+{"city":"Mumbai","occasion":"work"}
+```
+
+Mark every item in an outfit as worn:
+
+```http
+POST /api/v1/outfits/{outfit_id}/wear
+Authorization: Bearer <firebase-id-token>
+```
+
+### Morning notifications
+
+The Flutter app stores city, IANA timezone, notification time, and opt-in state through:
+
+```text
+GET  /api/v1/users/me/preferences
+PUT  /api/v1/users/me/preferences
+POST /api/v1/users/me/devices
+```
+
+The local scheduler checks enabled profiles every minute and uses Firebase Admin to send the generated outfit to registered devices. For iOS, upload an APNs authentication key in Firebase Console under **Project Settings > Cloud Messaging** and test on a physical signed device. The simulator does not provide a production push-notification test.
+
+The scheduler is process-local for MVP development. Set `NOTIFICATION_SCHEDULER_ENABLED=false` on extra API workers or replace it with one durable scheduled worker before horizontally scaling.
 
 ## 4. Deploy to Render
 

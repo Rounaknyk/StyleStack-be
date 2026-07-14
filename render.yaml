@@ -24,4 +24,27 @@ services:
         sync: false
       - key: SUPABASE_STORAGE_BUCKET
         value: wardrobe-images
-
+      - key: BACKGROUND_REMOVAL_ENABLED
+        value: "true"
+      - key: BACKGROUND_REMOVAL_MODEL
+        value: u2netp
+      - key: FASHION_SEGMENTATION_ENABLED
+        value: "true"
+      - key: GMAIL_IMPORT_LOG_EMAIL_PREVIEWS
+        value: "false"
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_VISION_MODEL
+        value: qwen/qwen3.6-27b
+      - key: GROQ_REQUEST_TIMEOUT_SECONDS
+        value: "30"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_VISION_MODEL
+        value: gemini-3.5-flash
+      - key: OPENWEATHER_API_KEY
+        sync: false
+      - key: NOTIFICATION_SCHEDULER_ENABLED
+        value: "true"
+      - key: NOTIFICATION_POLL_SECONDS
+        value: "60"

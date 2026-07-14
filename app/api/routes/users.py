@@ -1,7 +1,19 @@
-from fastapi import APIRouter
-from pydantic import BaseModel
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from fastapi import APIRouter, HTTPException
+from firebase_admin import messaging
+from pydantic import BaseModel, Field
 
 from app.dependencies.auth import CurrentUser
+from app.core.supabase import get_supabase_client
+from app.models.user_preferences import (
+    DeviceTokenRequest,
+    TestNotificationResponse,
+    UserPreferences,
+    UserPreferencesUpdate,
+)
+from app.services.notifications import notification_scheduler
 
 router = APIRouter()
 
@@ -10,8 +22,138 @@ class CurrentUserResponse(BaseModel):
     user_id: str
 
 
+class SimulationResponse(BaseModel):
+    kind: str
+    notifications_sent: int
+    outfit_ids: list[str] = Field(default_factory=list)
+    detail: str
+
+
 @router.get("/me", response_model=CurrentUserResponse)
 def read_current_user(current_user: CurrentUser) -> CurrentUserResponse:
     """Return the Firebase UID represented by the caller's ID token."""
     return CurrentUserResponse(user_id=current_user["uid"])
 
+
+@router.get("/me/preferences", response_model=UserPreferences)
+def read_preferences(current_user: CurrentUser):
+    response = get_supabase_client().table("profiles").select(
+        "city,timezone,notification_enabled,notification_time"
+    ).eq("firebase_uid", current_user["uid"]).limit(1).execute()
+    if not response.data:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return response.data[0]
+
+
+@router.put("/me/preferences", response_model=UserPreferences)
+def update_preferences(payload: UserPreferencesUpdate, current_user: CurrentUser):
+    updates = payload.model_dump(exclude_unset=True, mode="json")
+    if not updates:
+        raise HTTPException(status_code=422, detail="At least one preference is required")
+    response = get_supabase_client().table("profiles").update(updates).eq(
+        "firebase_uid", current_user["uid"]
+    ).execute()
+    if not response.data:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return response.data[0]
+
+
+@router.post("/me/devices", status_code=204)
+def register_device(payload: DeviceTokenRequest, current_user: CurrentUser) -> None:
+    get_supabase_client().table("device_tokens").upsert(
+        {
+            "owner_firebase_uid": current_user["uid"],
+            "token": payload.token,
+            "platform": payload.platform,
+        },
+        on_conflict="token",
+    ).execute()
+
+
+@router.delete("/me/devices", status_code=204)
+def unregister_device(payload: DeviceTokenRequest, current_user: CurrentUser) -> None:
+    get_supabase_client().table("device_tokens").delete().eq(
+        "owner_firebase_uid", current_user["uid"]
+    ).eq("token", payload.token).execute()
+
+
+@router.post("/me/test-notification", response_model=TestNotificationResponse)
+def send_test_notification(current_user: CurrentUser) -> TestNotificationResponse:
+    tokens = get_supabase_client().table("device_tokens").select("token").eq(
+        "owner_firebase_uid", current_user["uid"]
+    ).execute().data or []
+    if not tokens:
+        raise HTTPException(
+            status_code=422,
+            detail="No notification device is registered. Enable notifications on a physical device first.",
+        )
+    message = messaging.MulticastMessage(
+        notification=messaging.Notification(
+            title="StyleStack test notification",
+            body="Push notifications are configured correctly 🎉",
+        ),
+        data={"type": "test_notification"},
+        tokens=[row["token"] for row in tokens],
+    )
+    try:
+        response = messaging.send_each_for_multicast(message)
+        return TestNotificationResponse(
+            success_count=response.success_count,
+            failure_count=response.failure_count,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Firebase could not send the test notification. Check APNs and Cloud Messaging configuration.",
+        ) from exc
+
+
+def _simulation_profile(uid: str) -> tuple[object, dict, datetime]:
+    client = get_supabase_client()
+    rows = client.table("profiles").select(
+        "firebase_uid,city,timezone,notification_time,last_notification_date"
+    ).eq("firebase_uid", uid).limit(1).execute().data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    profile = rows[0]
+    now = datetime.now(ZoneInfo(profile.get("timezone") or "UTC"))
+    return client, profile, now
+
+
+@router.post("/me/simulations/daily-outfit", response_model=SimulationResponse)
+def simulate_daily_outfit(current_user: CurrentUser) -> SimulationResponse:
+    """Run the same daily-outfit delivery function used by the 8 AM scheduler."""
+    client, profile, now = _simulation_profile(current_user["uid"])
+    try:
+        outfit_id = notification_scheduler.process_daily_outfit(client, profile, now)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Daily outfit simulation failed") from exc
+    return SimulationResponse(
+        kind="daily_outfit",
+        notifications_sent=1,
+        outfit_ids=[outfit_id],
+        detail="The production 8 AM outfit flow ran successfully.",
+    )
+
+
+@router.post("/me/simulations/tomorrow-events", response_model=SimulationResponse)
+def simulate_tomorrow_events(current_user: CurrentUser) -> SimulationResponse:
+    """Run the same tomorrow-event delivery function used by the scheduler."""
+    client, profile, now = _simulation_profile(current_user["uid"])
+    try:
+        event_ids = notification_scheduler.process_event_reminders(
+            client, profile, now, force=True
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Event reminder simulation failed") from exc
+    return SimulationResponse(
+        kind="tomorrow_events",
+        notifications_sent=len(event_ids),
+        detail=(
+            f"Sent {len(event_ids)} tomorrow-event reminder(s)."
+            if event_ids
+            else "No calendar events were found for tomorrow."
+        ),
+    )

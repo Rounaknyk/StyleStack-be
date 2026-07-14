@@ -18,5 +18,4 @@ USER app
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "exec gunicorn app.main:app -k uvicorn.workers.UvicornWorker --workers 2 --bind 0.0.0:${PORT}"]
-
+CMD ["sh", "-c", "exec gunicorn app.main:app -k uvicorn.workers.UvicornWorker --workers 1 --bind 0.0.0:${PORT}"]
