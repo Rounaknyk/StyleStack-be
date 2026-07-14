@@ -94,6 +94,8 @@ class _ImageCandidate:
     hint: str
     digest: str
     source_url: str | None = None
+    width: int | None = None
+    height: int | None = None
 
 
 class _EmailImageParser(HTMLParser):
@@ -120,13 +122,43 @@ class _EmailImageParser(HTMLParser):
         if not src and values.get("srcset"):
             src = values["srcset"].split(",")[0].strip().split(" ")[0]
         if src:
+            alt = re.sub(r"\s+", " ", values.get("alt", "")).strip()[:300]
             self.images.append(
                 _HTMLImage(
                     url=src,
-                    alt=re.sub(r"\s+", " ", values.get("alt", "")).strip()[:300],
+                    alt=alt,
                     width=self._dimension(values.get("width")),
                     height=self._dimension(values.get("height")),
                 )
+            )
+
+    def handle_data(self, data: str) -> None:
+        text = re.sub(r"\s+", " ", unescape(data)).strip()
+        if not 8 <= len(text) <= 300:
+            return
+        lowered = text.casefold()
+        if any(
+            label in lowered
+            for label in (
+                "view order",
+                "track package",
+                "your orders",
+                "your account",
+                "buy again",
+                "privacy",
+                "terms",
+            )
+        ):
+            return
+        # Amazon commonly puts the product title in the text node immediately
+        # after an image whose alt attribute is blank.
+        if self.images and not self.images[-1].alt:
+            image = self.images[-1]
+            self.images[-1] = _HTMLImage(
+                url=image.url,
+                alt=text,
+                width=image.width,
+                height=image.height,
             )
 
 
@@ -250,6 +282,8 @@ def _prepare_candidate(
                 hint=hint,
                 digest=hashlib.sha256(prepared).hexdigest(),
                 source_url=source_url,
+                width=width,
+                height=height,
             )
     except Exception:
         return None
@@ -303,6 +337,22 @@ def _is_likely_product_asset(candidate: _ImageCandidate) -> bool:
     return False
 
 
+def _candidate_product_score(candidate: _ImageCandidate) -> int:
+    score = 1000 if _strong_product_hint(candidate.hint) else 0
+    url = (candidate.source_url or "").casefold()
+    if "/images/i/" in url:
+        score += 500
+    pixels = (candidate.width or 0) * (candidate.height or 0)
+    return score + min(400, pixels // 5000)
+
+
+def _delivered_item_count(subject: str) -> int:
+    match = re.search(r"delivered:\s*(\d+)\s+items?\b", subject, re.I)
+    if not match:
+        return 1
+    return max(1, min(MAX_CANDIDATE_IMAGES_PER_MESSAGE, int(match.group(1))))
+
+
 FASHION_KEYWORDS: dict[str, str] = {
     "t-shirt": "shirt", "tshirt": "shirt", "shirt": "shirt",
     "sweater": "jacket", "sweatshirt": "jacket", "hoodie": "jacket",
@@ -318,15 +368,34 @@ FASHION_KEYWORDS: dict[str, str] = {
 def _email_fashion_fallback(
     candidate: _ImageCandidate, email_text: str
 ) -> GmailProductAnalysis | None:
-    if not _is_likely_product_asset(candidate):
-        return None
-    lowered = email_text.casefold()
+    combined_text = f"{candidate.hint} {email_text}"
+    lowered = combined_text.casefold()
     matched = next(
-        ((keyword, category) for keyword, category in FASHION_KEYWORDS.items() if keyword in lowered),
+        (
+            (keyword, category)
+            for keyword, category in FASHION_KEYWORDS.items()
+            if re.search(rf"(?<![a-z]){re.escape(keyword)}(?![a-z])", lowered)
+        ),
         None,
     )
     if not matched:
         return None
+    if not _is_likely_product_asset(candidate):
+        url = candidate.source_url or ""
+        host = (urlparse(url).hostname or "").casefold()
+        is_merchant_cdn = any(
+            host == suffix or host.endswith(f".{suffix}")
+            for suffix in (
+                "media-amazon.com",
+                "images-amazon.com",
+                "ssl-images-amazon.com",
+                "myntassets.com",
+                "fkcdn.com",
+                "ajio.com",
+            )
+        )
+        if not is_merchant_cdn:
+            return None
     keyword, category = matched
     name = candidate.hint.strip() if _strong_product_hint(candidate.hint) else f"Imported {keyword}"
     return GmailProductAnalysis(
@@ -414,7 +483,7 @@ def _image_candidates(
         if candidate.digest not in seen:
             seen.add(candidate.digest)
             unique.append(candidate)
-    unique.sort(key=lambda item: 1 if _strong_product_hint(item.hint) else 0, reverse=True)
+    unique.sort(key=_candidate_product_score, reverse=True)
     return unique[:MAX_CANDIDATE_IMAGES_PER_MESSAGE]
 
 
@@ -460,10 +529,7 @@ def _thread_content(
             if candidate.digest not in seen:
                 seen.add(candidate.digest)
                 candidates.append(candidate)
-    candidates.sort(
-        key=lambda item: 1 if _strong_product_hint(item.hint) else 0,
-        reverse=True,
-    )
+    candidates.sort(key=_candidate_product_score, reverse=True)
     return (
         " ".join(texts)[:12000],
         candidates[:MAX_CANDIDATE_IMAGES_PER_MESSAGE],
@@ -643,17 +709,29 @@ def import_gmail_orders(client: Any, uid: str, access_token: str, limit: int) ->
             failed = 0
             rate_limited = groq_rate_limited
             imported_names: list[str] = []
+            rejection_reasons: list[str] = []
+            fallback_accepted = 0
+            fallback_budget = _delivered_item_count(_header(payload, "Subject"))
             for candidate in candidates:
                 try:
                     if rate_limited:
+                        if fallback_accepted >= fallback_budget:
+                            rejected += 1
+                            rejection_reasons.append("extra image beyond delivered item count")
+                            continue
                         analysis = _email_fashion_fallback(candidate, text)
                         if analysis is None:
                             rejected += 1
+                            rejection_reasons.append(
+                                "image lacked matching fashion product evidence"
+                            )
                             continue
+                        fallback_accepted += 1
                     else:
                         analysis = _analyze_product_image(candidate, text)
                     if not analysis.is_fashion_item:
                         rejected += 1
+                        rejection_reasons.append("vision classified image as non-fashion")
                         continue
                     stored_path = _store_product(
                         client, uid, message_id, candidate, analysis
@@ -669,6 +747,13 @@ def import_gmail_orders(client: Any, uid: str, access_token: str, limit: int) ->
                         groq_rate_limited = True
                         fallback = _email_fashion_fallback(candidate, text)
                         if fallback is not None:
+                            if fallback_accepted >= fallback_budget:
+                                rejected += 1
+                                rejection_reasons.append(
+                                    "extra image beyond delivered item count"
+                                )
+                                continue
+                            fallback_accepted += 1
                             try:
                                 stored_path = _store_product(
                                     client, uid, message_id, candidate, fallback
@@ -704,6 +789,10 @@ def import_gmail_orders(client: Any, uid: str, access_token: str, limit: int) ->
                         ("Raw refs", str(raw_image_reference_count)),
                         ("Image hosts", ", ".join(image_hosts) or "none"),
                         ("Rejected", str(rejected)),
+                        (
+                            "Why rejected",
+                            "; ".join(dict.fromkeys(rejection_reasons)) or "none",
+                        ),
                         ("Failed", str(failed)),
                         ("Result", result),
                     ],

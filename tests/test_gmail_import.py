@@ -8,6 +8,7 @@ from app.services.gmail_import import (
     _EmailImageParser,
     _ImageCandidate,
     _email_fashion_fallback,
+    _delivered_item_count,
     _header,
     _html_images,
     _likely_content_image,
@@ -44,6 +45,17 @@ class GmailImportLoggingTests(unittest.TestCase):
         self.assertEqual(len(parser.images), 1)
         self.assertEqual(parser.images[0].alt, "Blue running shoe")
         self.assertEqual(parser.images[0].width, 640)
+
+    def test_html_parser_uses_product_text_after_blank_alt_image(self) -> None:
+        parser = _EmailImageParser()
+        parser.feed(
+            '<img src="https://m.media-amazon.com/images/G/product.jpg">'
+            '<div>Fitness Mantra Sports Winters Cap</div>'
+        )
+        self.assertEqual(
+            parser.images[0].alt,
+            "Fitness Mantra Sports Winters Cap",
+        )
 
     def test_json_ld_image_url_is_extracted(self) -> None:
         html = (
@@ -101,6 +113,32 @@ class GmailImportLoggingTests(unittest.TestCase):
         self.assertIsNotNone(fallback)
         assert fallback is not None
         self.assertEqual(fallback.category, "shirt")
+
+    def test_amazon_merchant_image_can_fallback_from_adjacent_product_title(self) -> None:
+        candidate = _ImageCandidate(
+            contents=b"image",
+            content_type="image/jpeg",
+            hint="Fitness Mantra Sports Winters Cap",
+            digest="abc",
+            source_url="https://m.media-amazon.com/images/G/31/order-card.jpg",
+            width=160,
+            height=160,
+        )
+        fallback = _email_fashion_fallback(
+            candidate,
+            "Your package was delivered Order 408-5421781-6928348",
+        )
+        self.assertIsNotNone(fallback)
+        assert fallback is not None
+        self.assertEqual(fallback.category, "accessory")
+        self.assertEqual(fallback.name, "Fitness Mantra Sports Winters Cap")
+
+    def test_delivered_subject_limits_rate_limit_fallback_imports(self) -> None:
+        self.assertEqual(
+            _delivered_item_count("Delivered: 1 item | Order # 408-1"),
+            1,
+        )
+        self.assertEqual(_delivered_item_count("Delivered: 2 items"), 2)
 
 
 if __name__ == "__main__":
