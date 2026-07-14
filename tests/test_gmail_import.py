@@ -1,19 +1,24 @@
 import unittest
+from unittest.mock import patch
 from io import BytesIO
 import base64
 
 from PIL import Image
-from pydantic import ValidationError
 
 from app.models.imports import GmailImportRequest
 from app.services.gmail_import import (
     _EmailImageParser,
     _ImageCandidate,
+    _amazon_order_id,
+    _amazon_product_from_title,
     _email_fashion_fallback,
-    _forced_order_fallback,
     _delivered_item_count,
     _header,
     _html_images,
+    _is_delivered_amazon_message,
+    _is_amazon_order_thumbnail_url,
+    _is_transactional_amazon_product,
+    import_gmail_orders,
     _likely_content_image,
     _log_full_test_email,
     _original_amazon_image_url,
@@ -173,28 +178,44 @@ class GmailImportLoggingTests(unittest.TestCase):
         )
         self.assertEqual(_delivered_item_count("Delivered: 2 items"), 2)
 
-    def test_explicit_order_mode_can_import_best_amazon_image_without_ai(self) -> None:
+    def test_delivered_amazon_product_uses_its_own_title_without_ai(self) -> None:
         candidate = _ImageCandidate(
             contents=b"image",
             content_type="image/jpeg",
-            hint="Fitness Mantra Sports Winters Cap",
+            hint=(
+                "Fitness Mantra® Sports Winters Cap & Muffler for Men & Women| "
+                "Beanie Cap| 1 Set| (Black)"
+            ),
             digest="abc",
             source_url="https://m.media-amazon.com/images/I/product.jpg",
-            width=320,
-            height=320,
+            width=2560,
+            height=2560,
+            email_width=90,
+            email_height=90,
+            is_order_thumbnail=True,
         )
-        fallback = _forced_order_fallback(candidate, "408-5421781-6928348")
+        fallback = _amazon_product_from_title(candidate)
         self.assertIsNotNone(fallback)
         assert fallback is not None
         self.assertTrue(fallback.is_fashion_item)
         self.assertEqual(fallback.category, "accessory")
-        self.assertEqual(fallback.name, "Fitness Mantra Sports Winters Cap")
+        self.assertIn("Fitness Mantra", fallback.name or "")
         self.assertEqual(fallback.brand, "Fitness Mantra")
         self.assertEqual(fallback.color, "black")
         self.assertEqual(fallback.season, "winter")
         self.assertIn("neck-warmer", fallback.tags)
 
     def test_amazon_thumbnail_url_is_rewritten_to_original_image(self) -> None:
+        self.assertTrue(
+            _is_amazon_order_thumbnail_url(
+                "https://m.media-amazon.com/images/I/71ETCqzBUVL.*SS90*.jpg"
+            )
+        )
+        self.assertFalse(
+            _is_amazon_order_thumbnail_url(
+                "https://m.media-amazon.com/images/I/41CA4IUucWL.*SR276,276*.jpg"
+            )
+        )
         self.assertEqual(
             _original_amazon_image_url(
                 "https://m.media-amazon.com/images/I/71ETCqzBUVL.*SS90*.jpg"
@@ -208,7 +229,22 @@ class GmailImportLoggingTests(unittest.TestCase):
             "https://m.media-amazon.com/images/I/41CA4IUucWL.jpg",
         )
 
-    def test_explicit_order_mode_rejects_unlabelled_catalog_image(self) -> None:
+    def test_recommendation_carousel_image_is_not_a_purchased_product(self) -> None:
+        recommendation = _ImageCandidate(
+            contents=b"image",
+            content_type="image/jpeg",
+            hint="Amazon Brand - Symbol Men's Casual Acrylic High Neck Sweater",
+            digest="recommendation",
+            source_url="https://m.media-amazon.com/images/I/sweater.jpg",
+            width=2560,
+            height=2560,
+            email_width=276,
+            email_height=276,
+        )
+        self.assertFalse(_is_transactional_amazon_product(recommendation))
+        self.assertIsNone(_amazon_product_from_title(recommendation))
+
+    def test_delivered_import_rejects_unlabelled_catalog_image(self) -> None:
         unrelated_jacket = _ImageCandidate(
             contents=b"image",
             content_type="image/jpeg",
@@ -217,27 +253,24 @@ class GmailImportLoggingTests(unittest.TestCase):
             source_url="https://m.media-amazon.com/images/I/jacket.jpg",
             width=500,
             height=700,
+            email_width=90,
+            email_height=90,
         )
-        self.assertIsNone(
-            _forced_order_fallback(
-                unrelated_jacket,
-                "408-5421781-6928348",
-            )
-        )
+        self.assertIsNone(_amazon_product_from_title(unrelated_jacket))
 
-    def test_explicit_order_mode_rejects_nonmerchant_image(self) -> None:
+    def test_delivered_import_rejects_nonmerchant_image(self) -> None:
         candidate = _ImageCandidate(
             contents=b"image",
             content_type="image/jpeg",
             hint="Fitness Mantra Sports Winters Cap",
             digest="abc",
             source_url="https://example.com/tracking-image.jpg",
+            email_width=90,
+            email_height=90,
         )
-        self.assertIsNone(
-            _forced_order_fallback(candidate, "408-5421781-6928348")
-        )
+        self.assertIsNone(_amazon_product_from_title(candidate))
 
-    def test_explicit_order_mode_rejects_amazon_logo(self) -> None:
+    def test_delivered_import_rejects_amazon_logo(self) -> None:
         logo = _ImageCandidate(
             contents=b"image",
             content_type="image/jpeg",
@@ -249,19 +282,129 @@ class GmailImportLoggingTests(unittest.TestCase):
             ),
             width=86,
             height=43,
+            email_width=86,
+            email_height=43,
         )
-        self.assertIsNone(
-            _forced_order_fallback(logo, "408-5421781-6928348")
+        self.assertIsNone(_amazon_product_from_title(logo))
+
+    def test_only_delivered_amazon_subjects_are_accepted(self) -> None:
+        def payload(subject: str, sender: str = "order-update@amazon.in") -> dict:
+            return {
+                "headers": [
+                    {"name": "Subject", "value": subject},
+                    {"name": "From", "value": sender},
+                ]
+            }
+
+        self.assertTrue(
+            _is_delivered_amazon_message(
+                payload("Delivered: 1 item | Order # 408-5421781-6928348")
+            )
+        )
+        self.assertTrue(
+            _is_delivered_amazon_message(
+                payload(
+                    "Delivered: Your Amazon package has been delivered.",
+                    "shipment-tracking@amazon.in",
+                )
+            )
+        )
+        self.assertFalse(
+            _is_delivered_amazon_message(payload("Shipped: Your Amazon order"))
+        )
+        self.assertFalse(
+            _is_delivered_amazon_message(payload("Arriving today: Your order"))
+        )
+        self.assertFalse(
+            _is_delivered_amazon_message(
+                payload("Delivered: Your package could not be delivered")
+            )
+        )
+        self.assertFalse(
+            _is_delivered_amazon_message(
+                payload("Delivered: order update", "offers@example.com")
+            )
         )
 
-    def test_import_request_validates_optional_order_id(self) -> None:
-        request = GmailImportRequest(
-            access_token="x" * 20,
-            order_id="408-5421781-6928348",
+    def test_order_id_is_extracted_from_delivered_subject(self) -> None:
+        payload = {
+            "headers": [
+                {
+                    "name": "Subject",
+                    "value": "Delivered: 1 item | Order # 408-5421781-6928348",
+                }
+            ]
+        }
+        self.assertEqual(
+            _amazon_order_id(payload),
+            "408-5421781-6928348",
         )
-        self.assertEqual(request.order_id, "408-5421781-6928348")
-        with self.assertRaises(ValidationError):
-            GmailImportRequest(access_token="x" * 20, order_id="invalid")
+
+    def test_import_request_no_longer_has_test_order_id(self) -> None:
+        request = GmailImportRequest(access_token="x" * 20)
+        self.assertFalse(hasattr(request, "order_id"))
+
+    def test_import_orchestration_skips_shipped_mail_and_never_calls_ai(self) -> None:
+        delivered_payload = {
+            "headers": [
+                {
+                    "name": "Subject",
+                    "value": "Delivered: 1 item | Order # 408-5421781-6928348",
+                },
+                {
+                    "name": "From",
+                    "value": '"Amazon.in" <order-update@amazon.in>',
+                },
+            ]
+        }
+        shipped_payload = {
+            "headers": [
+                {"name": "Subject", "value": "Shipped: Your Amazon order"},
+                {
+                    "name": "From",
+                    "value": '"Amazon.in" <shipment-tracking@amazon.in>',
+                },
+            ]
+        }
+        candidate = _ImageCandidate(
+            contents=b"image",
+            content_type="image/jpeg",
+            hint="Fitness Mantra Sports Winters Cap (Black)",
+            digest="cap",
+            source_url="https://m.media-amazon.com/images/I/cap.jpg",
+            width=1200,
+            height=1200,
+            email_width=90,
+            email_height=90,
+            is_order_thumbnail=True,
+        )
+
+        def gmail_get(_http, path, _token, **_params):
+            if path == "messages":
+                return {"messages": [{"id": "delivered"}, {"id": "shipped"}]}
+            if path == "messages/delivered":
+                return {"id": "delivered", "payload": delivered_payload}
+            if path == "messages/shipped":
+                return {"id": "shipped", "payload": shipped_payload}
+            raise AssertionError(f"Unexpected Gmail path: {path}")
+
+        with (
+            patch("app.services.gmail_import._gmail_get", side_effect=gmail_get) as get,
+            patch(
+                "app.services.gmail_import._amazon_order_content",
+                return_value=("delivered", [candidate], 1, 1, ["m.media-amazon.com"]),
+            ),
+            patch("app.services.gmail_import._store_product", return_value="path"),
+            patch(
+                "app.services.gmail_import._analyze_product_image",
+                side_effect=AssertionError("AI must not run for Gmail import"),
+            ),
+        ):
+            result = import_gmail_orders(object(), "uid", "x" * 20, 25)
+
+        self.assertEqual(result, (2, 1, 1))
+        query = get.call_args_list[0].kwargs["q"]
+        self.assertIn('subject:"Delivered:"', query)
 
 
 if __name__ == "__main__":

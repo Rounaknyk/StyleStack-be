@@ -20,11 +20,9 @@ from app.services.gemini import gemini_json_from_image
 logger = logging.getLogger("stylestack.gmail_import")
 
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
-FORCED_GMAIL_ORDER_ID = "408-5421781-6928348"
-FORCED_GMAIL_ORDER_PRODUCT_NAME = "Fitness Mantra Sports Winters Cap"
-FORCED_GMAIL_ORDER_MAX_MESSAGES = 10
+AMAZON_RELATED_ORDER_MAX_MESSAGES = 10
 MAX_REMOTE_IMAGE_BYTES = 10 * 1024 * 1024
-MAX_CANDIDATE_IMAGES_PER_MESSAGE = 4
+MAX_CANDIDATE_IMAGES_PER_MESSAGE = 10
 ALLOWED_IMAGE_HOST_SUFFIXES = (
     "amazon.in",
     "amazon.com",
@@ -40,27 +38,17 @@ ALLOWED_IMAGE_HOST_SUFFIXES = (
     "googleusercontent.com",
 )
 
-MERCHANT_QUERIES: dict[str, str] = {
-    "amazon": (
-        'newer_than:2y '
-        '{from:order-update@amazon.in from:shipment-tracking@amazon.in} '
-        '{subject:"Delivered:" "Your package was delivered"} '
-        '-subject:(cancelled OR refunded OR returned) '
-        '-subject:"could not be delivered"'
-    ),
-    "myntra": (
-        'newer_than:2y from:(myntra.com) subject:order subject:delivered '
-        '-subject:(sale OR offer OR coupon)'
-    ),
-    "flipkart": (
-        'newer_than:2y from:(flipkart.com) subject:order subject:delivered '
-        '-subject:(sale OR offer OR cashback)'
-    ),
-    "ajio": (
-        'newer_than:2y from:(ajio.com) subject:order subject:delivered '
-        '-subject:(sale OR offer OR coupon)'
-    ),
-}
+AMAZON_ORDER_SENDERS_QUERY = (
+    "{from:order-update@amazon.in "
+    "from:shipment-tracking@amazon.in "
+    "from:auto-confirm@amazon.in}"
+)
+AMAZON_DELIVERED_QUERY = (
+    f'{AMAZON_ORDER_SENDERS_QUERY} subject:"Delivered:" '
+    '-subject:(cancelled OR refunded OR returned OR replacement) '
+    '-subject:"could not be delivered" '
+    '-subject:"delivery attempted"'
+)
 
 IMAGE_PROMPT = """Decide whether this ecommerce delivery-email image shows a purchased fashion item suitable for a wardrobe app.
 Fashion items include clothing, shoes, bags, jewelry, watches and wearable accessories.
@@ -98,6 +86,9 @@ class _ImageCandidate:
     source_url: str | None = None
     width: int | None = None
     height: int | None = None
+    email_width: int | None = None
+    email_height: int | None = None
+    is_order_thumbnail: bool = False
 
 
 class _EmailImageParser(HTMLParser):
@@ -299,7 +290,13 @@ def _gmail_get(client: httpx.Client, path: str, token: str, **params: Any) -> di
 
 
 def _prepare_candidate(
-    contents: bytes, hint: str, source_url: str | None = None
+    contents: bytes,
+    hint: str,
+    source_url: str | None = None,
+    *,
+    email_width: int | None = None,
+    email_height: int | None = None,
+    is_order_thumbnail: bool = False,
 ) -> _ImageCandidate | None:
     """Validate and normalize remote mail images for the Groq base64 limit."""
     try:
@@ -335,6 +332,9 @@ def _prepare_candidate(
                 source_url=source_url,
                 width=width,
                 height=height,
+                email_width=email_width,
+                email_height=email_height,
+                is_order_thumbnail=is_order_thumbnail,
             )
     except Exception:
         return None
@@ -362,9 +362,15 @@ def _original_amazon_image_url(url: str) -> str:
     )
 
 
-def _matches_forced_order_product(value: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", " ", value.casefold())
-    return all(word in normalized for word in ("fitness", "mantra", "winter", "cap"))
+def _is_amazon_order_thumbnail_url(url: str) -> bool:
+    """Amazon transactional rows use SS thumbnails; SR assets are carousels."""
+    return bool(
+        re.search(
+            r"\.(?:\*ss\d+\*|_ss\d+_)\.(?=jpe?g(?:\?|$))",
+            url,
+            flags=re.I,
+        )
+    )
 
 
 def _likely_content_image(image: _HTMLImage) -> bool:
@@ -425,8 +431,8 @@ def _is_likely_product_asset(candidate: _ImageCandidate) -> bool:
 
 def _candidate_product_score(candidate: _ImageCandidate) -> int:
     score = 1000 if _strong_product_hint(candidate.hint) else 0
-    if _matches_forced_order_product(candidate.hint):
-        score += 10_000
+    if _is_transactional_amazon_product(candidate):
+        score += 5_000
     url = (candidate.source_url or "").casefold()
     if "/images/i/" in url:
         score += 500
@@ -440,11 +446,101 @@ def _candidate_product_score(candidate: _ImageCandidate) -> int:
     return score + min(400, pixels // 5000)
 
 
+def _best_unique_candidates(
+    candidates: list[_ImageCandidate],
+) -> list[_ImageCandidate]:
+    by_digest: dict[str, _ImageCandidate] = {}
+    for candidate in candidates:
+        current = by_digest.get(candidate.digest)
+        if current is None or _candidate_product_score(
+            candidate
+        ) > _candidate_product_score(current):
+            by_digest[candidate.digest] = candidate
+    result = list(by_digest.values())
+    result.sort(key=_candidate_product_score, reverse=True)
+    return result[:MAX_CANDIDATE_IMAGES_PER_MESSAGE]
+
+
+def _is_transactional_amazon_product(candidate: _ImageCandidate) -> bool:
+    """Distinguish purchased-item thumbnails from Amazon recommendations."""
+    url = (candidate.source_url or "").casefold()
+    host = (urlparse(url).hostname or "").casefold()
+    if not (
+        _strong_product_hint(candidate.hint)
+        and "/images/i/" in url
+        and host.endswith("amazon.com")
+        and candidate.is_order_thumbnail
+    ):
+        return False
+    if candidate.email_width is None or candidate.email_height is None:
+        return True
+    return 48 <= candidate.email_width <= 200 and 48 <= candidate.email_height <= 200
+
+
 def _delivered_item_count(subject: str) -> int:
     match = re.search(r"delivered:\s*(\d+)\s+items?\b", subject, re.I)
     if not match:
         return 1
     return max(1, min(MAX_CANDIDATE_IMAGES_PER_MESSAGE, int(match.group(1))))
+
+
+def _is_delivered_amazon_message(payload: dict[str, Any]) -> bool:
+    sender = _header(payload, "From").casefold()
+    subject = _header(payload, "Subject").strip()
+    if not any(
+        address in sender
+        for address in (
+            "order-update@amazon.in",
+            "shipment-tracking@amazon.in",
+        )
+    ):
+        return False
+    if not re.match(r"^delivered\s*:", subject, re.I):
+        return False
+    rejected = (
+        "could not be delivered",
+        "delivery attempted",
+        "not delivered",
+        "cancelled",
+        "refunded",
+        "returned",
+        "replacement",
+    )
+    return not any(term in subject.casefold() for term in rejected)
+
+
+def _amazon_order_id(payload: dict[str, Any], text: str = "") -> str | None:
+    searchable = f"{_header(payload, 'Subject')} {text}"
+    match = re.search(r"(?<!\d)(\d{3}-\d{7}-\d{7})(?!\d)", searchable)
+    return match.group(1) if match else None
+
+
+def _amazon_thread_order_id(
+    http: httpx.Client,
+    access_token: str,
+    message: dict[str, Any],
+) -> str | None:
+    thread_id = str(message.get("threadId") or "")
+    if not thread_id:
+        return None
+    try:
+        thread = _gmail_get(
+            http,
+            f"threads/{thread_id}",
+            access_token,
+            format="full",
+        )
+        for thread_message in thread.get("messages", []) or []:
+            payload = thread_message.get("payload", {})
+            order_id = _amazon_order_id(
+                payload,
+                _body_text(payload) or str(thread_message.get("snippet") or ""),
+            )
+            if order_id:
+                return order_id
+    except Exception:
+        logger.debug("gmail_thread_order_id_failed thread_id=%s", thread_id)
+    return None
 
 
 FASHION_KEYWORDS: dict[str, str] = {
@@ -501,42 +597,103 @@ def _email_fashion_fallback(
     )
 
 
-def _forced_order_fallback(
-    candidate: _ImageCandidate, order_id: str
+def _amazon_product_from_title(
+    candidate: _ImageCandidate,
 ) -> GmailProductAnalysis | None:
-    """Import only an Amazon catalog image bound to the expected product title."""
-    host = (urlparse(candidate.source_url or "").hostname or "").casefold()
-    has_expected_title = _matches_forced_order_product(candidate.hint)
-    is_catalog_image = "/images/i/" in (candidate.source_url or "").casefold()
-    if not has_expected_title or not is_catalog_image or not any(
-        host == suffix or host.endswith(f".{suffix}")
-        for suffix in (
-            "media-amazon.com",
-            "images-amazon.com",
-            "ssl-images-amazon.com",
-            "amazon.in",
-            "amazon.com",
-        )
-    ):
+    """Build safe metadata from the purchased item's own Amazon title."""
+    if not _is_transactional_amazon_product(candidate):
         return None
-    name = (
-        candidate.hint.strip()
-        if _strong_product_hint(candidate.hint)
-        else FORCED_GMAIL_ORDER_PRODUCT_NAME
+    name = re.sub(r"\s+", " ", candidate.hint).strip()
+    lowered = name.casefold()
+    matched = next(
+        (
+            (keyword, category)
+            for keyword, category in FASHION_KEYWORDS.items()
+            if re.search(rf"(?<![a-z]){re.escape(keyword)}(?![a-z])", lowered)
+        ),
+        None,
     )
+    if not matched:
+        return None
+    keyword, category = matched
+
+    color = next(
+        (
+            value
+            for value in (
+                "black",
+                "white",
+                "red",
+                "blue",
+                "green",
+                "yellow",
+                "purple",
+                "pink",
+                "brown",
+                "grey",
+                "orange",
+                "beige",
+                "multicolor",
+            )
+            if re.search(rf"(?<![a-z]){value}(?![a-z])", lowered)
+        ),
+        None,
+    )
+    brand_match = re.match(r"\s*([^|,(]{2,60}?)(?:®|™)", name)
+    brand = brand_match.group(1).strip() if brand_match else None
+    season = "winter" if any(term in lowered for term in ("winter", "woolen", "thermal")) else "all"
+    if category == "accessory" and any(term in lowered for term in ("muffler", "neck warmer")):
+        description = " ".join(
+            part
+            for part in (
+                color.title() if color else None,
+                "winter beanie cap with a matching neck-warmer/muffler set",
+                f"by {brand}." if brand else ".",
+            )
+            if part
+        ).replace(" .", ".")
+    else:
+        label = {
+            "shirt": "shirt",
+            "pants": "pair of pants",
+            "dress": "dress",
+            "jacket": "jacket",
+            "shoes": "pair of shoes",
+            "accessory": keyword,
+            "other": "fashion item",
+        }[category]
+        description = " ".join(
+            part
+            for part in (
+                color.title() if color else None,
+                label,
+                f"by {brand}." if brand else "from a confirmed Amazon delivery.",
+            )
+            if part
+        )
+    tags = [keyword]
+    tag_evidence = {
+        "winter": ("winter",),
+        "beanie": ("beanie",),
+        "neck-warmer": ("neck warmer", "muffler"),
+        "unisex": ("unisex", "men & women", "men and women"),
+        "knitwear": ("knit", "knitted"),
+    }
+    for tag, evidence in tag_evidence.items():
+        if any(term in lowered for term in evidence) and tag not in tags:
+            tags.append(tag)
+    if color and color not in tags:
+        tags.append(color)
     return GmailProductAnalysis(
         is_fashion_item=True,
         name=name,
-        brand="Fitness Mantra",
-        category="accessory",
-        color="black",
-        season="winter",
+        brand=brand,
+        category=category,  # type: ignore[arg-type]
+        color=color,  # type: ignore[arg-type]
+        season=season,
         formality="casual",
-        description=(
-            "Black winter beanie cap with a matching neck-warmer/muffler set "
-            "by Fitness Mantra."
-        ),
-        tags=["beanie", "winter", "neck-warmer", "unisex", "knitwear"],
+        description=description,
+        tags=tags[:5],
     )
 
 
@@ -565,7 +722,14 @@ def _remote_candidate(http: httpx.Client, image: _HTMLImage) -> _ImageCandidate 
             contents = response.content
             if not contents or len(contents) > MAX_REMOTE_IMAGE_BYTES:
                 continue
-            candidate = _prepare_candidate(contents, image.alt, download_url)
+            candidate = _prepare_candidate(
+                contents,
+                image.alt,
+                download_url,
+                email_width=image.width,
+                email_height=image.height,
+                is_order_thumbnail=_is_amazon_order_thumbnail_url(image.url),
+            )
             if candidate:
                 return candidate
         except Exception:
@@ -610,7 +774,12 @@ def _image_candidates(
     http: httpx.Client, access_token: str, message_id: str, payload: dict[str, Any]
 ) -> list[_ImageCandidate]:
     candidates = _inline_candidates(http, access_token, message_id, payload)
-    html_images = [image for image in _html_images(payload) if _likely_content_image(image)]
+    html_images = [
+        image
+        for image in _html_images(payload)
+        if _likely_content_image(image)
+        and _is_amazon_order_thumbnail_url(image.url)
+    ]
     html_images.sort(
         key=lambda image: (
             1 if _strong_product_hint(image.alt) else 0,
@@ -622,14 +791,7 @@ def _image_candidates(
         candidate = _remote_candidate(http, image)
         if candidate:
             candidates.append(candidate)
-    unique: list[_ImageCandidate] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        if candidate.digest not in seen:
-            seen.add(candidate.digest)
-            unique.append(candidate)
-    unique.sort(key=_candidate_product_score, reverse=True)
-    return unique[:MAX_CANDIDATE_IMAGES_PER_MESSAGE]
+    return _best_unique_candidates(candidates)
 
 
 def _thread_content(
@@ -651,7 +813,6 @@ def _thread_content(
 
     texts: list[str] = []
     candidates: list[_ImageCandidate] = []
-    seen: set[str] = set()
     raw_reference_count = 0
     referenced_hosts: set[str] = set()
     for thread_message in messages:
@@ -668,19 +829,83 @@ def _thread_content(
         message_id = str(thread_message.get("id") or "")
         if not message_id:
             continue
-        for candidate in _image_candidates(
-            http, access_token, message_id, payload
-        ):
-            if candidate.digest not in seen:
-                seen.add(candidate.digest)
-                candidates.append(candidate)
-    candidates.sort(key=_candidate_product_score, reverse=True)
+        candidates.extend(
+            _image_candidates(http, access_token, message_id, payload)
+        )
+    candidates = _best_unique_candidates(candidates)
     return (
         " ".join(texts)[:12000],
         candidates[:MAX_CANDIDATE_IMAGES_PER_MESSAGE],
         len(messages),
         raw_reference_count,
         sorted(referenced_hosts)[:8],
+    )
+
+
+def _amazon_order_content(
+    http: httpx.Client,
+    access_token: str,
+    delivered_message: dict[str, Any],
+    order_id: str | None,
+) -> tuple[str, list[_ImageCandidate], int, int, list[str]]:
+    """Enrich one delivered confirmation using only that order's Amazon mail."""
+    messages = [delivered_message]
+    seen_message_ids = {str(delivered_message.get("id") or "")}
+    if order_id:
+        try:
+            listing = _gmail_get(
+                http,
+                "messages",
+                access_token,
+                q=f'{AMAZON_ORDER_SENDERS_QUERY} "{order_id}"',
+                maxResults=AMAZON_RELATED_ORDER_MAX_MESSAGES,
+            )
+            for reference in listing.get("messages", []) or []:
+                message_id = str(reference.get("id") or "")
+                if not message_id or message_id in seen_message_ids:
+                    continue
+                seen_message_ids.add(message_id)
+                messages.append(
+                    _gmail_get(
+                        http,
+                        f"messages/{message_id}",
+                        access_token,
+                        format="full",
+                    )
+                )
+        except Exception:
+            logger.warning("gmail_order_enrichment_failed order_id=%s", order_id)
+
+    texts: list[str] = []
+    candidates: list[_ImageCandidate] = []
+    raw_reference_count = 0
+    image_hosts: set[str] = set()
+    checked_messages = 0
+    processed_threads: set[str] = set()
+    for message in messages:
+        thread_key = str(message.get("threadId") or message.get("id") or "")
+        if thread_key and thread_key in processed_threads:
+            continue
+        if thread_key:
+            processed_threads.add(thread_key)
+        text, found, thread_count, raw_count, hosts = _thread_content(
+            http,
+            access_token,
+            message,
+        )
+        if text:
+            texts.append(text)
+        checked_messages += thread_count
+        raw_reference_count += raw_count
+        image_hosts.update(hosts)
+        candidates.extend(found)
+    candidates = _best_unique_candidates(candidates)
+    return (
+        " ".join(texts)[:12000],
+        candidates[:MAX_CANDIDATE_IMAGES_PER_MESSAGE],
+        checked_messages,
+        raw_reference_count,
+        sorted(image_hosts)[:8],
     )
 
 
@@ -730,11 +955,18 @@ def _analyze_product_image(candidate: _ImageCandidate, email_text: str) -> Gmail
 def _store_product(
     client: Any,
     uid: str,
-    message_id: str,
+    source_id: str,
     candidate: _ImageCandidate,
     analysis: GmailProductAnalysis,
 ) -> str | None:
-    external_id = f"{message_id}:{candidate.digest[:20]}"
+    category = analysis.category or "other"
+    color = analysis.color
+    name = (
+        analysis.name
+        or " ".join(value for value in (color, category) if value)
+        or "Imported item"
+    ).strip()
+    external_id = f"amazon:{source_id}:{candidate.digest[:20]}"
     existing = (
         client.table("wardrobe_items")
         .select("id")
@@ -745,6 +977,17 @@ def _store_product(
         .execute()
     )
     if existing.data:
+        return None
+    legacy_existing = (
+        client.table("wardrobe_items")
+        .select("id")
+        .eq("owner_firebase_uid", uid)
+        .eq("import_source", "gmail")
+        .eq("name", name[:200])
+        .limit(1)
+        .execute()
+    )
+    if legacy_existing.data:
         return None
 
     # Merchant catalog images already have a clean product background. Running
@@ -757,9 +1000,6 @@ def _store_product(
         file=processed,
         file_options={"content-type": "image/jpeg", "upsert": "false"},
     )
-    category = analysis.category or "other"
-    color = analysis.color
-    name = (analysis.name or " ".join(value for value in (color, category) if value) or "Imported item").strip()
     row = {
         "owner_firebase_uid": uid,
         "name": name[:200],
@@ -792,248 +1032,107 @@ def _store_product(
         raise
 
 
-def _remove_bad_forced_order_imports(client: Any, uid: str) -> None:
-    """Remove both incorrect test imports created by earlier fallbacks."""
-    bad_names = [
-        f"Amazon order {FORCED_GMAIL_ORDER_ID} item",
-        FORCED_GMAIL_ORDER_PRODUCT_NAME,
-    ]
-    try:
-        exact_response = (
-            client.table("wardrobe_items")
-            .select("id,image_path")
-            .eq("owner_firebase_uid", uid)
-            .eq("import_source", "gmail")
-            .in_("name", bad_names)
-            .execute()
-        )
-        product_response = (
-            client.table("wardrobe_items")
-            .select("id,image_path")
-            .eq("owner_firebase_uid", uid)
-            .eq("import_source", "gmail")
-            .ilike("name", "Fitness Mantra%Winters Cap%")
-            .execute()
-        )
-        rows_by_id = {
-            str(row["id"]): row
-            for row in [*(exact_response.data or []), *(product_response.data or [])]
-            if row.get("id")
-        }
-        rows = list(rows_by_id.values())
-        if not rows:
-            return
-        paths = [str(row.get("image_path")) for row in rows if row.get("image_path")]
-        if paths:
-            client.storage.from_(
-                get_settings().supabase_storage_bucket
-            ).remove(paths)
-        client.table("wardrobe_items").delete().in_(
-            "id", list(rows_by_id)
-        ).execute()
-        logger.info("gmail_bad_logo_import_removed count=%s", len(rows))
-    except Exception as exc:
-        logger.warning(
-            "gmail_bad_logo_cleanup_failed error_type=%s", type(exc).__name__
-        )
-
-
 def import_gmail_orders(
     client: Any,
     uid: str,
     access_token: str,
     limit: int,
-    *,
-    order_id: str | None = None,
 ) -> tuple[int, int, int]:
-    # Temporary production safety gate: never let any client version trigger a
-    # full mailbox scan while we diagnose this specific Amazon order.
-    if order_id != FORCED_GMAIL_ORDER_ID or limit != 1:
-        logger.info(
-            "gmail_import_scope_forced requested_order=%s requested_limit=%s "
-            "enforced_order=%s",
-            order_id or "none",
-            limit,
-            FORCED_GMAIL_ORDER_ID,
-        )
-    order_id = FORCED_GMAIL_ORDER_ID
-    # Gmail's purchase card is composed from several separate emails. Search
-    # only this order's Amazon messages, then stop after one item is imported.
-    limit = FORCED_GMAIL_ORDER_MAX_MESSAGES
-    _remove_bad_forced_order_imports(client, uid)
     scanned = imported = skipped = 0
-    groq_rate_limited = False
     with httpx.Client(timeout=30) as http:
-        message_refs: list[dict[str, Any]] = []
-        seen_message_ids: set[str] = set()
-        merchant_matches: dict[str, int] = {}
-        merchant_refs: dict[str, list[dict[str, Any]]] = {}
-        for merchant, query in MERCHANT_QUERIES.items():
-            if order_id and merchant != "amazon":
-                merchant_matches[merchant] = 0
-                merchant_refs[merchant] = []
-                continue
-            effective_query = (
-                "newer_than:2y "
-                "{from:order-update@amazon.in "
-                "from:shipment-tracking@amazon.in "
-                "from:auto-confirm@amazon.in} "
-                f'"{order_id}"'
-                if order_id
-                else query
-            )
-            listing = _gmail_get(
-                http,
-                "messages",
-                access_token,
-                q=effective_query,
-                maxResults=limit,
-            )
-            matches = listing.get("messages", []) or []
-            merchant_matches[merchant] = len(matches)
-            merchant_refs[merchant] = matches
-
-        # Round-robin preserves merchant diversity but automatically gives empty
-        # merchant capacity to stores that have more delivery confirmations.
-        position = 0
-        while len(message_refs) < limit:
-            added = False
-            for merchant in MERCHANT_QUERIES:
-                refs = merchant_refs.get(merchant, [])
-                if position >= len(refs):
-                    continue
-                message_ref = refs[position]
-                message_id = str(message_ref.get("id") or "")
-                if message_id and message_id not in seen_message_ids:
-                    seen_message_ids.add(message_id)
-                    message_refs.append(message_ref)
-                    added = True
-                    if len(message_refs) >= limit:
-                        break
-            if not added and all(
-                position >= len(refs) - 1 for refs in merchant_refs.values()
-            ):
-                break
-            position += 1
+        listing = _gmail_get(
+            http,
+            "messages",
+            access_token,
+            q=AMAZON_DELIVERED_QUERY,
+            maxResults=limit,
+        )
+        message_refs = listing.get("messages", []) or []
 
         _log_block(
-            "CLOSET SYNC — DELIVERY EMAIL SEARCH",
-            [(merchant.title(), str(count)) for merchant, count in merchant_matches.items()]
-            + [("Unique emails", str(len(message_refs[:limit])))],
+            "CLOSET SYNC — AMAZON DELIVERED EMAIL SEARCH",
+            [
+                ("Delivered matches", str(len(message_refs[:limit]))),
+                ("Maximum checked", str(limit)),
+            ],
         )
 
         for email_index, message_ref in enumerate(message_refs[:limit], start=1):
-            if order_id and imported >= 1:
-                break
             message_id = str(message_ref.get("id") or "")
             if not message_id:
                 continue
             scanned += 1
             message = _gmail_get(http, f"messages/{message_id}", access_token, format="full")
-            if order_id:
-                _log_full_test_email(message)
             payload = message.get("payload", {})
+            subject = _header(payload, "Subject")
+            sender = _header(payload, "From")
+            if not _is_delivered_amazon_message(payload):
+                skipped += 1
+                logger.info(
+                    "gmail_message_ignored reason=not_confirmed_amazon_delivery "
+                    "subject=%r from=%r",
+                    subject,
+                    sender,
+                )
+                continue
+            root_text = _body_text(payload) or str(message.get("snippet") or "")
+            order_id = _amazon_order_id(payload, root_text)
+            if not order_id:
+                order_id = _amazon_thread_order_id(http, access_token, message)
             (
                 text,
                 candidates,
                 thread_message_count,
                 raw_image_reference_count,
                 image_hosts,
-            ) = _thread_content(http, access_token, message)
+            ) = _amazon_order_content(
+                http,
+                access_token,
+                message,
+                order_id,
+            )
             message_imported = 0
             rejected = 0
             failed = 0
-            rate_limited = groq_rate_limited
             imported_names: list[str] = []
             rejection_reasons: list[str] = []
-            fallback_accepted = 0
-            fallback_budget = _delivered_item_count(_header(payload, "Subject"))
-            candidates_to_process = (
-                [
-                    candidate
-                    for candidate in candidates
-                    if _is_likely_product_asset(candidate)
-                    and _matches_forced_order_product(candidate.hint)
-                ]
-                if order_id
-                else candidates
-            )
+            item_budget = _delivered_item_count(subject)
+            candidates_to_process = [
+                candidate
+                for candidate in candidates
+                if _is_transactional_amazon_product(candidate)
+            ]
             for candidate in candidates_to_process:
+                if message_imported >= item_budget:
+                    break
                 try:
-                    if order_id:
-                        analysis = _forced_order_fallback(candidate, order_id)
-                        logger.info(
-                            "gmail_order_candidate_checked accepted=%s hint=%r "
-                            "width=%s height=%s url=%s",
-                            analysis is not None,
-                            candidate.hint,
-                            candidate.width or "unknown",
-                            candidate.height or "unknown",
-                            candidate.source_url or "inline-image",
-                        )
-                        if analysis is None:
-                            rejected += 1
-                            rejection_reasons.append(
-                                "image was not bound to the expected product title"
-                            )
-                            continue
-                        fallback_accepted += 1
-                    elif rate_limited:
-                        if fallback_accepted >= fallback_budget:
-                            rejected += 1
-                            rejection_reasons.append("extra image beyond delivered item count")
-                            continue
-                        analysis = _email_fashion_fallback(candidate, text)
-                        if analysis is None:
-                            rejected += 1
-                            rejection_reasons.append(
-                                "image lacked matching fashion product evidence"
-                            )
-                            continue
-                        fallback_accepted += 1
-                    else:
-                        analysis = _analyze_product_image(candidate, text)
-                    if not analysis.is_fashion_item:
+                    analysis = _amazon_product_from_title(candidate)
+                    if analysis is None or not analysis.is_fashion_item:
                         rejected += 1
-                        rejection_reasons.append("vision classified image as non-fashion")
+                        rejection_reasons.append(
+                            "delivered product was not a supported fashion item"
+                        )
                         continue
                     stored_path = _store_product(
-                        client, uid, message_id, candidate, analysis
+                        client,
+                        uid,
+                        order_id or message_id,
+                        candidate,
+                        analysis,
                     )
                     if stored_path:
                         imported += 1
                         message_imported += 1
                         imported_names.append(analysis.name or candidate.hint or "Imported item")
-                        if order_id:
-                            break
                 except Exception as exc:
-                    status_code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
-                    if status_code == 429:
-                        rate_limited = True
-                        groq_rate_limited = True
-                        fallback = _email_fashion_fallback(candidate, text)
-                        if fallback is not None:
-                            if fallback_accepted >= fallback_budget:
-                                rejected += 1
-                                rejection_reasons.append(
-                                    "extra image beyond delivered item count"
-                                )
-                                continue
-                            fallback_accepted += 1
-                            try:
-                                stored_path = _store_product(
-                                    client, uid, message_id, candidate, fallback
-                                )
-                                if stored_path:
-                                    imported += 1
-                                    message_imported += 1
-                                    imported_names.append(
-                                        fallback.name or "Imported fashion item"
-                                    )
-                                    continue
-                            except Exception:
-                                pass
                     failed += 1
+                    logger.warning(
+                        "gmail_product_import_failed order_id=%s hint=%r "
+                        "error_type=%s",
+                        order_id or "unknown",
+                        candidate.hint,
+                        type(exc).__name__,
+                    )
             if message_imported == 0:
                 skipped += 1
             if get_settings().gmail_import_log_email_previews:
@@ -1042,17 +1141,22 @@ def import_gmail_orders(
                     if message_imported
                     else "No product imported"
                 )
-                if rate_limited and candidates:
-                    result += " (Groq rate limit encountered; descriptive image names used as fallback)"
                 _log_block(
-                    f"CLOSET SYNC — EMAIL {email_index} OF {len(message_refs[:limit])}",
+                    f"CLOSET SYNC — DELIVERED EMAIL {email_index} OF {len(message_refs[:limit])}",
                     [
-                        ("Subject", _header(payload, "Subject")),
-                        ("Test order", order_id or "all eligible orders"),
-                        ("From", _header(payload, "From")),
+                        ("Subject", subject),
+                        ("Order", order_id or "not found"),
+                        ("From", sender),
+                        ("Delivery", "confirmed"),
                         ("Preview", _preview(text)),
-                        ("Images", f"{len(candidates)} candidate(s)"),
-                        ("Thread", f"{thread_message_count} message(s) checked"),
+                        (
+                            "Products",
+                            f"{len(candidates_to_process)} purchased candidate(s)",
+                        ),
+                        (
+                            "Order mail",
+                            f"{thread_message_count} related message(s) checked",
+                        ),
                         ("Raw refs", str(raw_image_reference_count)),
                         ("Image hosts", ", ".join(image_hosts) or "none"),
                         ("Rejected", str(rejected)),

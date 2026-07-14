@@ -23,7 +23,6 @@ def sync_gmail_orders(payload: GmailImportRequest, current_user: CurrentUser) ->
             current_user["uid"],
             payload.access_token,
             payload.max_messages,
-            order_id=payload.order_id,
         )
         logger.debug(
             "gmail_import_completed uid=%s scanned=%s imported=%s skipped=%s",

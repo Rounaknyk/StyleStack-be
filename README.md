@@ -226,13 +226,14 @@ feature; it adds the hidden tags and the two outfit-selfie tables.
 
 ### Gmail Closet Sync
 
-Closet Sync searches delivery confirmations from Amazon, Myntra, Flipkart, and
-Ajio. It parses remote HTML images and inline Gmail attachments, filters tiny
-assets and unapproved hosts, deduplicates identical bytes, and uses vision AI
-to reject logos, banners, tracking assets, and non-fashion products. Accepted
-items are placed on a white background, uploaded to private Supabase Storage,
-and inserted into `wardrobe_items`. Email HTML and temporary image bytes are
-not persisted.
+Closet Sync searches only confirmed Amazon `Delivered:` emails. Each result is
+validated again by sender and subject before processing; shipped, arriving,
+failed, returned, refunded, and promotional messages are ignored. Related mail
+for the same order is used to recover the purchased product title and Amazon
+transactional thumbnail. Recommendation carousels, logos, and non-fashion
+products are rejected without making vision-AI calls. Thumbnail URLs are
+upgraded to their original-resolution catalog images before upload to private
+Supabase Storage. Email HTML and temporary image bytes are not persisted.
 
 ### Weather-aware outfit API
 
