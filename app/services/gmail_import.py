@@ -21,6 +21,7 @@ from app.services.gemini import gemini_json_from_image
 logger = logging.getLogger("stylestack.gmail_import")
 
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
+FORCED_GMAIL_ORDER_ID = "408-5421781-6928348"
 MAX_REMOTE_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_CANDIDATE_IMAGES_PER_MESSAGE = 4
 ALLOWED_IMAGE_HOST_SUFFIXES = (
@@ -741,6 +742,18 @@ def import_gmail_orders(
     *,
     order_id: str | None = None,
 ) -> tuple[int, int, int]:
+    # Temporary production safety gate: never let any client version trigger a
+    # full mailbox scan while we diagnose this specific Amazon order.
+    if order_id != FORCED_GMAIL_ORDER_ID or limit != 1:
+        logger.info(
+            "gmail_import_scope_forced requested_order=%s requested_limit=%s "
+            "enforced_order=%s",
+            order_id or "none",
+            limit,
+            FORCED_GMAIL_ORDER_ID,
+        )
+    order_id = FORCED_GMAIL_ORDER_ID
+    limit = 1
     scanned = imported = skipped = 0
     groq_rate_limited = False
     with httpx.Client(timeout=30) as http:
