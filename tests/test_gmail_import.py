@@ -186,7 +186,8 @@ class GmailImportLoggingTests(unittest.TestCase):
         self.assertIsNotNone(fallback)
         assert fallback is not None
         self.assertTrue(fallback.is_fashion_item)
-        self.assertEqual(fallback.category, "other")
+        self.assertEqual(fallback.category, "accessory")
+        self.assertEqual(fallback.name, "Fitness Mantra Sports Winters Cap")
         self.assertIn("needs-review", fallback.tags)
 
     def test_explicit_order_mode_rejects_nonmerchant_image(self) -> None:
@@ -199,6 +200,23 @@ class GmailImportLoggingTests(unittest.TestCase):
         )
         self.assertIsNone(
             _forced_order_fallback(candidate, "408-5421781-6928348")
+        )
+
+    def test_explicit_order_mode_rejects_amazon_logo(self) -> None:
+        logo = _ImageCandidate(
+            contents=b"image",
+            content_type="image/jpeg",
+            hint="Amazon.in",
+            digest="logo",
+            source_url=(
+                "https://m.media-amazon.com/images/G/01/outbound/"
+                "OutboundTemplates/Smile_Logo_Dark.png"
+            ),
+            width=86,
+            height=43,
+        )
+        self.assertIsNone(
+            _forced_order_fallback(logo, "408-5421781-6928348")
         )
 
     def test_import_request_validates_optional_order_id(self) -> None:

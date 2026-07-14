@@ -22,6 +22,8 @@ logger = logging.getLogger("stylestack.gmail_import")
 
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
 FORCED_GMAIL_ORDER_ID = "408-5421781-6928348"
+FORCED_GMAIL_ORDER_PRODUCT_NAME = "Fitness Mantra Sports Winters Cap"
+FORCED_GMAIL_ORDER_MAX_MESSAGES = 10
 MAX_REMOTE_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_CANDIDATE_IMAGES_PER_MESSAGE = 4
 ALLOWED_IMAGE_HOST_SUFFIXES = (
@@ -352,7 +354,24 @@ def _likely_content_image(image: _HTMLImage) -> bool:
     if not _allowed_image_url(image.url):
         return False
     marker = f"{image.url} {image.alt}".casefold()
-    if any(word in marker for word in ("pixel", "spacer", "tracking", "mailtrack", "facebook", "twitter", "instagram")):
+    if any(
+        word in marker
+        for word in (
+            "pixel",
+            "spacer",
+            "tracking",
+            "mailtrack",
+            "facebook",
+            "twitter",
+            "instagram",
+            "amazon logo",
+            "smile_logo",
+            "outboundtemplates",
+            "infoicon",
+            "/nav/",
+            ".woff",
+        )
+    ):
         return False
     if image.width is not None and image.height is not None:
         if image.width < 48 or image.height < 48:
@@ -468,7 +487,7 @@ def _forced_order_fallback(
 ) -> GmailProductAnalysis | None:
     """Import the best image in explicit single-order test mode without AI."""
     host = (urlparse(candidate.source_url or "").hostname or "").casefold()
-    if not any(
+    if not _is_likely_product_asset(candidate) or not any(
         host == suffix or host.endswith(f".{suffix}")
         for suffix in (
             "media-amazon.com",
@@ -482,12 +501,12 @@ def _forced_order_fallback(
     name = (
         candidate.hint.strip()
         if _strong_product_hint(candidate.hint)
-        else f"Amazon order {order_id} item"
+        else FORCED_GMAIL_ORDER_PRODUCT_NAME
     )
     return GmailProductAnalysis(
         is_fashion_item=True,
         name=name,
-        category="other",
+        category="accessory",
         description=(
             "Imported from an explicitly selected Amazon delivery email. "
             "Review the item details in StyleStack."
@@ -734,6 +753,41 @@ def _store_product(
         raise
 
 
+def _remove_bad_forced_order_import(client: Any, uid: str) -> None:
+    """Remove the logo placeholder created by the earlier forced fallback."""
+    placeholder_name = f"Amazon order {FORCED_GMAIL_ORDER_ID} item"
+    try:
+        response = (
+            client.table("wardrobe_items")
+            .select("id,image_path")
+            .eq("owner_firebase_uid", uid)
+            .eq("import_source", "gmail")
+            .eq("name", placeholder_name)
+            .execute()
+        )
+        rows = response.data or []
+        if not rows:
+            return
+        paths = [str(row.get("image_path")) for row in rows if row.get("image_path")]
+        if paths:
+            client.storage.from_(
+                get_settings().supabase_storage_bucket
+            ).remove(paths)
+        (
+            client.table("wardrobe_items")
+            .delete()
+            .eq("owner_firebase_uid", uid)
+            .eq("import_source", "gmail")
+            .eq("name", placeholder_name)
+            .execute()
+        )
+        logger.info("gmail_bad_logo_import_removed count=%s", len(rows))
+    except Exception as exc:
+        logger.warning(
+            "gmail_bad_logo_cleanup_failed error_type=%s", type(exc).__name__
+        )
+
+
 def import_gmail_orders(
     client: Any,
     uid: str,
@@ -753,7 +807,10 @@ def import_gmail_orders(
             FORCED_GMAIL_ORDER_ID,
         )
     order_id = FORCED_GMAIL_ORDER_ID
-    limit = 1
+    # Gmail's purchase card is composed from several separate emails. Search
+    # only this order's Amazon messages, then stop after one item is imported.
+    limit = FORCED_GMAIL_ORDER_MAX_MESSAGES
+    _remove_bad_forced_order_import(client, uid)
     scanned = imported = skipped = 0
     groq_rate_limited = False
     with httpx.Client(timeout=30) as http:
@@ -766,13 +823,21 @@ def import_gmail_orders(
                 merchant_matches[merchant] = 0
                 merchant_refs[merchant] = []
                 continue
-            effective_query = f'{query} "{order_id}"' if order_id else query
+            effective_query = (
+                "newer_than:2y "
+                "{from:order-update@amazon.in "
+                "from:shipment-tracking@amazon.in "
+                "from:auto-confirm@amazon.in} "
+                f'"{order_id}"'
+                if order_id
+                else query
+            )
             listing = _gmail_get(
                 http,
                 "messages",
                 access_token,
                 q=effective_query,
-                maxResults=1 if order_id else limit,
+                maxResults=limit,
             )
             matches = listing.get("messages", []) or []
             merchant_matches[merchant] = len(matches)
@@ -808,6 +873,8 @@ def import_gmail_orders(
         )
 
         for email_index, message_ref in enumerate(message_refs[:limit], start=1):
+            if order_id and imported >= 1:
+                break
             message_id = str(message_ref.get("id") or "")
             if not message_id:
                 continue
@@ -831,7 +898,15 @@ def import_gmail_orders(
             rejection_reasons: list[str] = []
             fallback_accepted = 0
             fallback_budget = _delivered_item_count(_header(payload, "Subject"))
-            candidates_to_process = candidates[:fallback_budget] if order_id else candidates
+            candidates_to_process = (
+                [
+                    candidate
+                    for candidate in candidates
+                    if _is_likely_product_asset(candidate)
+                ][:fallback_budget]
+                if order_id
+                else candidates
+            )
             for candidate in candidates_to_process:
                 try:
                     if order_id:
@@ -844,6 +919,9 @@ def import_gmail_orders(
                                 "best image was not hosted by the selected merchant"
                             )
                             continue
+                        analysis = analysis.model_copy(
+                            update={"name": FORCED_GMAIL_ORDER_PRODUCT_NAME}
+                        )
                         fallback_accepted += 1
                     elif rate_limited:
                         if fallback_accepted >= fallback_budget:
