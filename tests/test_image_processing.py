@@ -4,7 +4,11 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from app.services.image_processing import put_item_on_white_background
+from app.services.image_processing import (
+    create_item_thumbnail,
+    optimize_item_image,
+    put_item_on_white_background,
+)
 
 
 def _jpeg(size: tuple[int, int] = (180, 120)) -> bytes:
@@ -15,6 +19,16 @@ def _jpeg(size: tuple[int, int] = (180, 120)) -> bytes:
 
 
 class ImageProcessingTests(unittest.TestCase):
+    def test_optimization_preserves_aspect_ratio_and_limits_largest_side(self) -> None:
+        result = optimize_item_image(_jpeg((3000, 1500)), max_dimension=1000)
+        rendered = Image.open(BytesIO(result))
+        self.assertEqual(rendered.size, (1000, 500))
+
+    def test_thumbnail_never_crops_the_image(self) -> None:
+        result = create_item_thumbnail(_jpeg((1200, 400)), max_dimension=480)
+        rendered = Image.open(BytesIO(result))
+        self.assertEqual(rendered.size, (480, 160))
+
     def test_general_removal_preserves_canvas_and_whitens_background(
         self,
     ) -> None:

@@ -5,7 +5,6 @@ from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
-from starlette.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
 from app.core.supabase import get_supabase_client
@@ -26,7 +25,6 @@ from app.services.wardrobe import (
     ensure_profile,
     get_owned_item,
 )
-from app.services.image_processing import put_item_on_white_background
 
 router = APIRouter()
 logger = logging.getLogger("stylestack.wardrobe")
@@ -163,35 +161,13 @@ async def create_wardrobe_item(
         raise HTTPException(status_code=413, detail="Image exceeds the 10 MB limit")
 
     settings = get_settings()
-    if settings.background_removal_enabled:
-        try:
-            contents = await run_in_threadpool(
-                put_item_on_white_background, contents, category
-            )
-            content_type = "image/jpeg"
-            logger.info(
-                "wardrobe_background_removed uid=%s output_bytes=%s",
-                current_user["uid"],
-                len(contents),
-            )
-        except Exception as exc:
-            logger.error(
-                "wardrobe_background_removal_failed uid=%s error_type=%s",
-                current_user["uid"],
-                type(exc).__name__,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Could not prepare a white-background image. Please retry the upload.",
-            ) from exc
-
     client = get_supabase_client()
     uid = current_user["uid"]
     ensure_profile(client, current_user)
 
     # Never trust the original filename for a storage path.
     suffix = ALLOWED_IMAGE_TYPES[content_type]
-    image_path = f"{uid}/{uuid4().hex}{suffix}"
+    image_path = f"{uid}/incoming/{uuid4().hex}{suffix}"
     bucket = client.storage.from_(settings.supabase_storage_bucket)
 
     try:
@@ -233,8 +209,8 @@ async def create_wardrobe_item(
         "currency": currency.upper() if currency else None,
         "image_path": image_path,
         "is_favorite": is_favorite,
-        "tagged": has_ai_preview,
-        "ai_tag_status": "completed" if has_ai_preview else "pending",
+        "tagged": False,
+        "ai_tag_status": "pending",
         "ai_category": ai_category.strip() if has_ai_preview else None,
         "ai_color": ai_color.strip() if has_ai_preview else None,
         "ai_season": ai_season.strip() if has_ai_preview else None,
@@ -253,24 +229,26 @@ async def create_wardrobe_item(
             created_item["id"],
             created_item["category"],
         )
-        if not has_ai_preview:
-            queued = background_jobs.enqueue(
-                ImageTaggingJob(
-                    item_id=str(created_item["id"]),
-                    image_path=image_path,
-                )
+        queued = background_jobs.enqueue(
+            ImageTaggingJob(
+                item_id=str(created_item["id"]),
+                image_path=image_path,
+                category=category.strip(),
+                skip_ai=has_ai_preview,
+                generate_name=name.strip().lower().startswith("new wardrobe item"),
             )
-            if not queued:
-                try:
-                    client.table("wardrobe_items").update(
-                        {"ai_tag_status": "failed"}
-                    ).eq("id", str(created_item["id"])).execute()
-                except Exception:
-                    logger.exception(
-                        "background_queue_failure_status_update_failed item_id=%s",
-                        created_item["id"],
-                    )
-                created_item["ai_tag_status"] = "failed"
+        )
+        if not queued:
+            try:
+                client.table("wardrobe_items").update(
+                    {"ai_tag_status": "failed"}
+                ).eq("id", str(created_item["id"])).execute()
+            except Exception:
+                logger.exception(
+                    "background_queue_failure_status_update_failed item_id=%s",
+                    created_item["id"],
+                )
+            created_item["ai_tag_status"] = "failed"
         return created_item
     except Exception as exc:
         # Compensating cleanup prevents an orphaned object if the DB insert fails.
@@ -428,11 +406,18 @@ def delete_wardrobe_item(item_id: UUID, current_user: CurrentUser) -> None:
         raise database_error("delete the wardrobe item", exc) from exc
 
     # The database deletion is authoritative; storage cleanup is best-effort.
-    if item.get("image_path"):
+    storage_paths = list(
+        dict.fromkeys(
+            path
+            for path in (item.get("image_path"), item.get("thumbnail_path"))
+            if path
+        )
+    )
+    if storage_paths:
         try:
             settings = get_settings()
             client.storage.from_(settings.supabase_storage_bucket).remove(
-                [item["image_path"]]
+                storage_paths
             )
         except Exception:
             logger.warning(

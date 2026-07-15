@@ -1,6 +1,8 @@
 import time
 import unittest
 from threading import Event
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.services.background_jobs import BackgroundJobQueue, ImageTaggingJob
 
@@ -11,7 +13,7 @@ class ControlledJobQueue(BackgroundJobQueue):
         self.started = Event()
         self.release = Event()
 
-    def _process_image_tagging(self, job: ImageTaggingJob) -> None:
+    def _process_image_pipeline(self, job: ImageTaggingJob) -> None:
         self.started.set()
         self.release.wait(timeout=2)
 
@@ -30,6 +32,81 @@ class BackgroundJobQueueTests(unittest.TestCase):
         self.assertTrue(queue.started.wait(timeout=1))
         queue.release.set()
         queue.stop()
+
+    def test_pipeline_optimizes_and_completes_outside_request(self) -> None:
+        class FakeBucket:
+            def __init__(self) -> None:
+                self.uploads: list[str] = []
+                self.removed: list[str] = []
+
+            def download(self, path: str) -> bytes:
+                return b"incoming-image"
+
+            def upload(self, *, path: str, file: bytes, file_options: dict) -> None:
+                self.uploads.append(path)
+
+            def remove(self, paths: list[str]) -> None:
+                self.removed.extend(paths)
+
+        class FakeTable:
+            def __init__(self) -> None:
+                self.updates: list[dict] = []
+
+            def update(self, payload: dict):
+                self.updates.append(payload)
+                return self
+
+            def eq(self, field: str, value: str):
+                return self
+
+            def execute(self):
+                return SimpleNamespace(data=[])
+
+        bucket = FakeBucket()
+        table = FakeTable()
+        client = SimpleNamespace(
+            storage=SimpleNamespace(from_=lambda name: bucket),
+            table=lambda name: table,
+        )
+        settings = SimpleNamespace(
+            supabase_storage_bucket="wardrobe-images",
+            background_removal_enabled=True,
+        )
+
+        with (
+            patch("app.services.background_jobs.get_supabase_client", return_value=client),
+            patch("app.services.background_jobs.get_settings", return_value=settings),
+            patch(
+                "app.services.background_jobs.put_item_on_white_background",
+                return_value=b"isolated",
+            ),
+            patch(
+                "app.services.background_jobs.optimize_item_image",
+                return_value=b"optimized",
+            ),
+            patch(
+                "app.services.background_jobs.create_item_thumbnail",
+                return_value=b"thumbnail",
+            ),
+        ):
+            BackgroundJobQueue()._process_image_pipeline(
+                ImageTaggingJob(
+                    "item-123",
+                    "uid/incoming/source.jpg",
+                    category="shirt",
+                    skip_ai=True,
+                )
+            )
+
+        self.assertEqual(
+            bucket.uploads,
+            ["processed/item-123.jpg", "thumbnails/item-123.jpg"],
+        )
+        self.assertIn("uid/incoming/source.jpg", bucket.removed)
+        self.assertEqual(table.updates[-1]["ai_tag_status"], "completed")
+        self.assertEqual(
+            table.updates[-1]["thumbnail_path"], "thumbnails/item-123.jpg"
+        )
 
 
 if __name__ == "__main__":

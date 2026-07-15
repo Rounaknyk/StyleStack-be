@@ -81,19 +81,23 @@ def get_owned_item(client: Client, item_id: str, uid: str) -> dict[str, Any]:
 
 
 def add_signed_image_url(client: Client, item: dict[str, Any]) -> dict[str, Any]:
-    """Add a one-hour URL for a private wardrobe image without storing the URL."""
+    """Add one-hour URLs for private full and thumbnail images."""
     result = dict(item)
     result["image_url"] = None
-    image_path = result.get("image_path")
-    if not image_path:
-        return result
-    try:
-        signed = client.storage.from_(get_settings().supabase_storage_bucket).create_signed_url(
-            image_path, 3600
-        )
-        if isinstance(signed, dict):
-            result["image_url"] = signed.get("signedURL") or signed.get("signedUrl")
-    except Exception:
-        # Item metadata remains useful if signing is temporarily unavailable.
-        pass
+    result["thumbnail_url"] = None
+    bucket = client.storage.from_(get_settings().supabase_storage_bucket)
+    for path_field, url_field in (
+        ("image_path", "image_url"),
+        ("thumbnail_path", "thumbnail_url"),
+    ):
+        image_path = result.get(path_field)
+        if not image_path:
+            continue
+        try:
+            signed = bucket.create_signed_url(image_path, 3600)
+            if isinstance(signed, dict):
+                result[url_field] = signed.get("signedURL") or signed.get("signedUrl")
+        except Exception:
+            # Item metadata remains useful if signing is temporarily unavailable.
+            pass
     return result

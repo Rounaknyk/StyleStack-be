@@ -27,6 +27,8 @@ class WardrobeItemResponse(BaseModel):
     currency: str | None = None
     image_path: str | None = None
     image_url: str | None = None
+    thumbnail_path: str | None = None
+    thumbnail_url: str | None = None
     is_favorite: bool
     tagged: bool = False
     ai_tag_status: TagStatus = "pending"

@@ -117,10 +117,12 @@ Expected response:
 
 ### Wardrobe API
 
-Before a new wardrobe image is stored, StyleStack automatically isolates the
-garment with the lightweight `u2netp` model, corrects phone-camera orientation,
-and composites it onto a pure white JPEG background. The model downloads once
-to the runtime cache on first use. Configure it with:
+Wardrobe uploads return as soon as the compressed source image is safely stored
+and the database record has been created. A backend worker then removes the
+background, corrects phone-camera orientation, creates an optimized full JPEG
+and an aspect-preserving 480 px thumbnail, and finally runs AI tagging. Flutter
+polls `ai_tag_status` and never runs rembg/U2Net locally. Configure processing
+with:
 
 ```env
 BACKGROUND_REMOVAL_ENABLED=true
@@ -129,8 +131,12 @@ FASHION_SEGMENTATION_ENABLED=true
 ```
 
 The removal model downloads on its first use. StyleStack preserves the original
-image dimensions and rejects any processed result that changes the canvas or
-erases essentially the whole item.
+canvas during removal and never crops thumbnails. If removal fails, the worker
+keeps an optimized original instead of losing the upload.
+
+Existing Supabase projects must run
+[`202607150002_add_wardrobe_thumbnails.sql`](supabase/migrations/202607150002_add_wardrobe_thumbnails.sql)
+once before testing this pipeline.
 
 Every wardrobe endpoint requires a Firebase ID token in the `Authorization` header. The API always combines the requested item ID with the verified Firebase UID, so another user's item is returned as `404` rather than exposing its existence.
 
@@ -180,7 +186,7 @@ The update endpoint accepts a JSON object containing any editable fields. Wear l
 
 ### Background AI tagging
 
-After an upload is stored and its database record is created, the API immediately places an image-tagging job on an in-process queue and returns the item with `ai_tag_status: "pending"`. A daemon worker changes the status to `processing`, calls Groq Vision, stores the AI fields separately from user-editable fields, and finishes with `completed` or `failed`.
+After an upload is stored and its database record is created, the API immediately places an image-processing job on an in-process queue and returns the item with `ai_tag_status: "pending"`. A daemon worker changes the status to `processing`, removes the background, optimizes the image, creates its thumbnail, calls vision AI, stores AI fields separately from user-editable fields, and finishes with `completed` or `failed`.
 
 Configure Groq in `.env`:
 

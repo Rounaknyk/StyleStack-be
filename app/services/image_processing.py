@@ -80,3 +80,50 @@ def put_item_on_white_background(contents: bytes, category: str | None = None) -
     if not result:
         raise RuntimeError("Background removal returned an empty image")
     return result
+
+
+def optimize_item_image(
+    contents: bytes,
+    *,
+    max_dimension: int = 2048,
+    quality: int = 90,
+) -> bytes:
+    """Normalize orientation and size without cropping or changing garment color."""
+    source = ImageOps.exif_transpose(Image.open(BytesIO(contents)))
+    if source.mode in {"RGBA", "LA"} or (
+        source.mode == "P" and "transparency" in source.info
+    ):
+        rgba = source.convert("RGBA")
+        white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        white.alpha_composite(rgba)
+        source = white.convert("RGB")
+    else:
+        source = source.convert("RGB")
+
+    source.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
+    output = BytesIO()
+    source.save(
+        output,
+        format="JPEG",
+        quality=quality,
+        optimize=True,
+        progressive=True,
+    )
+    result = output.getvalue()
+    if not result:
+        raise RuntimeError("Image optimization returned an empty image")
+    return result
+
+
+def create_item_thumbnail(
+    contents: bytes,
+    *,
+    max_dimension: int = 480,
+    quality: int = 84,
+) -> bytes:
+    """Create an aspect-preserving grid image; never center-crop clothing."""
+    return optimize_item_image(
+        contents,
+        max_dimension=max_dimension,
+        quality=quality,
+    )

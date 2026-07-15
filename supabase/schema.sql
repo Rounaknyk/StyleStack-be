@@ -177,6 +177,7 @@ create table if not exists public.wardrobe_items (
     purchase_price numeric(10, 2) check (purchase_price is null or purchase_price >= 0),
     currency char(3),
     image_path text,
+    thumbnail_path text,
     is_favorite boolean not null default false,
     tagged boolean not null default false,
     ai_tag_status text not null default 'pending'
@@ -204,6 +205,9 @@ alter table public.wardrobe_items
     add column if not exists ai_season text,
     add column if not exists ai_formality text,
     add column if not exists ai_description text;
+
+alter table public.wardrobe_items
+    add column if not exists thumbnail_path text;
 
 alter table public.wardrobe_items
     add column if not exists ai_visual_tags text[] not null default '{}';
