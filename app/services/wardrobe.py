@@ -21,14 +21,35 @@ def database_error(operation: str, exc: Exception) -> HTTPException:
     )
 
 
+def build_profile_sync_payload(
+    user: dict[str, Any], current_display_name: str | None
+) -> dict[str, Any]:
+    """Build a Firebase profile sync without replacing an onboarding name."""
+    profile: dict[str, Any] = {"firebase_uid": user["uid"]}
+    if user.get("email"):
+        profile["email"] = user["email"]
+    if user.get("picture"):
+        profile["avatar_url"] = user["picture"]
+
+    token_name = str(user.get("name") or "").strip()
+    if not str(current_display_name or "").strip() and token_name:
+        profile["display_name"] = token_name
+    return profile
+
+
 def ensure_profile(client: Client, user: dict[str, Any]) -> None:
-    profile = {
-        "firebase_uid": user["uid"],
-        "email": user.get("email"),
-        "display_name": user.get("name"),
-        "avatar_url": user.get("picture"),
-    }
     try:
+        rows = (
+            client.table("profiles")
+            .select("display_name")
+            .eq("firebase_uid", user["uid"])
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        current_display_name = rows[0].get("display_name") if rows else None
+        profile = build_profile_sync_payload(user, current_display_name)
         client.table("profiles").upsert(
             profile, on_conflict="firebase_uid"
         ).execute()

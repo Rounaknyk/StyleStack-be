@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import date
 from typing import Any
 
 import httpx
@@ -21,7 +22,10 @@ class StylingResult(BaseModel):
 
 
 def _call_stylist(
-    items: list[dict[str, Any]], weather: WeatherResponse, occasion: str
+    items: list[dict[str, Any]],
+    weather: WeatherResponse,
+    occasion: str,
+    style_profile: dict[str, Any] | None = None,
 ) -> StylingResult:
     settings = get_settings()
     if not settings.groq_api_key:
@@ -42,6 +46,7 @@ def _call_stylist(
         wardrobe_json=json.dumps(compact_items),
         weather_json=weather.model_dump_json(),
         occasion=occasion,
+        profile_json=json.dumps(style_profile or {}),
     )
     response = httpx.post(
         "https://api.groq.com/openai/v1/chat/completions",
@@ -66,6 +71,58 @@ def _call_stylist(
     return StylingResult.model_validate_json(
         response.json()["choices"][0]["message"]["content"]
     )
+
+
+def _age_group(date_of_birth: str | None, today: date | None = None) -> str | None:
+    if not date_of_birth:
+        return None
+    try:
+        born = date.fromisoformat(date_of_birth)
+    except (TypeError, ValueError):
+        return None
+    current = today or date.today()
+    age = current.year - born.year - (
+        (current.month, current.day) < (born.month, born.day)
+    )
+    if age < 13:
+        return "under_13"
+    if age < 20:
+        return "teen"
+    if age < 30:
+        return "20s"
+    if age < 40:
+        return "30s"
+    if age < 50:
+        return "40s"
+    return "50s_plus"
+
+
+def build_personal_style_context(profile: dict[str, Any] | None) -> dict[str, Any]:
+    """Expose useful onboarding signals without sending DOB or empty answers."""
+    if not profile:
+        return {"discovery_mode": True}
+    styles = [
+        value
+        for value in (profile.get("style_preferences") or [])
+        if value not in {"not_sure", "explore"}
+    ]
+    result: dict[str, Any] = {
+        "discovery_mode": not styles,
+        "preferred_styles": styles,
+        "goals": profile.get("onboarding_goals") or [],
+    }
+    gender = profile.get("gender_identity")
+    if gender and gender != "prefer_not_to_say":
+        result["gender_identity"] = gender
+    body_type = profile.get("body_type")
+    if body_type and body_type != "not_sure":
+        result["body_type"] = body_type
+    if profile.get("height_cm"):
+        result["height_cm"] = profile["height_cm"]
+    age_group = _age_group(profile.get("date_of_birth"))
+    if age_group:
+        result["age_group"] = age_group
+    return result
 
 
 def create_outfit_suggestion(
@@ -98,7 +155,22 @@ def create_outfit_suggestion(
     if not candidates:
         candidates = items
 
-    styling = _call_stylist(candidates, weather, occasion)
+    profile_rows = (
+        client.table("profiles")
+        .select(
+            "gender_identity,date_of_birth,body_type,height_cm,"
+            "style_preferences,onboarding_goals"
+        )
+        .eq("firebase_uid", uid)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    style_profile = build_personal_style_context(
+        profile_rows[0] if profile_rows else None
+    )
+    styling = _call_stylist(candidates, weather, occasion, style_profile)
     valid_ids = {str(item["id"]) for item in candidates}
     selected_ids = list(dict.fromkeys(i for i in styling.item_ids if i in valid_ids))
     if not selected_ids:

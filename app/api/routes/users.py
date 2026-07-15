@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException
@@ -13,9 +13,20 @@ from app.models.user_preferences import (
     UserPreferences,
     UserPreferencesUpdate,
 )
+from app.models.onboarding import (
+    OnboardingCompleteRequest,
+    OnboardingProfileResponse,
+)
 from app.services.notifications import notification_scheduler
+from app.services.wardrobe import ensure_profile
 
 router = APIRouter()
+
+ONBOARDING_PROFILE_FIELDS = (
+    "display_name,gender_identity,date_of_birth,body_type,height_cm,"
+    "style_preferences,shopping_frequency,onboarding_goals,"
+    "onboarding_completed,onboarding_completed_at,onboarding_version"
+)
 
 
 class CurrentUserResponse(BaseModel):
@@ -33,6 +44,53 @@ class SimulationResponse(BaseModel):
 def read_current_user(current_user: CurrentUser) -> CurrentUserResponse:
     """Return the Firebase UID represented by the caller's ID token."""
     return CurrentUserResponse(user_id=current_user["uid"])
+
+
+@router.get("/me/onboarding", response_model=OnboardingProfileResponse)
+def read_onboarding(current_user: CurrentUser) -> dict:
+    """Return onboarding state, creating the Firebase-backed profile if needed."""
+    client = get_supabase_client()
+    ensure_profile(client, current_user)
+    rows = (
+        client.table("profiles")
+        .select(ONBOARDING_PROFILE_FIELDS)
+        .eq("firebase_uid", current_user["uid"])
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return rows[0]
+
+
+@router.put("/me/onboarding", response_model=OnboardingProfileResponse)
+def complete_onboarding(
+    payload: OnboardingCompleteRequest, current_user: CurrentUser
+) -> dict:
+    """Persist the completed onboarding questionnaire for the signed-in user."""
+    client = get_supabase_client()
+    ensure_profile(client, current_user)
+    updates = payload.model_dump(mode="json")
+    updates.update(
+        {
+            "onboarding_completed": True,
+            "onboarding_completed_at": datetime.now(timezone.utc).isoformat(),
+            "onboarding_version": 1,
+        }
+    )
+    rows = (
+        client.table("profiles")
+        .update(updates)
+        .eq("firebase_uid", current_user["uid"])
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return rows[0]
 
 
 @router.get("/me/preferences", response_model=UserPreferences)

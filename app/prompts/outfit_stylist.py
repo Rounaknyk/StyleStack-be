@@ -31,6 +31,11 @@ STYLE PRIORITY — evaluate in this order:
 
 RULES:
 - Use only IDs from AVAILABLE_WARDROBE. Never invent an item.
+- Treat PERSONAL_STYLE_PROFILE as preference context, not a stereotype. Honour
+  explicitly selected vibes and goals, but keep neutral choices when fields are
+  empty or the user chose not_sure/explore.
+- Use body type and height only for proportion/length guidance. Never criticize
+  the wearer's body or imply that a body type needs to be hidden or corrected.
 - Select the smallest complete outfit, normally 2–5 pieces and at most 6.
 - Prefer specific, confident choices over generic safe combinations.
 - Do not mention weather first in the reasoning unless conditions are extreme.
@@ -45,10 +50,17 @@ Return ONLY valid JSON with exactly this structure:
 """.strip()
 
 
-def build_stylist_prompt(*, wardrobe_json: str, weather_json: str, occasion: str) -> str:
+def build_stylist_prompt(
+    *,
+    wardrobe_json: str,
+    weather_json: str,
+    occasion: str,
+    profile_json: str = "{}",
+) -> str:
     return f"""{MASTER_STYLIST_PROMPT}
 
 OCCASION: {occasion}
+PERSONAL_STYLE_PROFILE: {profile_json}
 WEATHER_CONSTRAINT: {weather_json}
 AVAILABLE_WARDROBE: {wardrobe_json}
 """
