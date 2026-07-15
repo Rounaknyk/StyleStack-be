@@ -398,6 +398,10 @@ alter table public.wear_logs enable row level security;
 alter table public.outfits enable row level security;
 alter table public.outfit_items enable row level security;
 alter table public.canvas_styles enable row level security;
+drop policy if exists canvas_styles_backend_only on public.canvas_styles;
+create policy canvas_styles_backend_only on public.canvas_styles
+    for all to anon, authenticated
+    using (false) with check (false);
 alter table public.device_tokens enable row level security;
 alter table public.calendar_events enable row level security;
 alter table public.app_notifications enable row level security;

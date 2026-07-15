@@ -20,3 +20,7 @@ before update on public.canvas_styles
 for each row execute function public.set_updated_at();
 
 alter table public.canvas_styles enable row level security;
+drop policy if exists canvas_styles_backend_only on public.canvas_styles;
+create policy canvas_styles_backend_only on public.canvas_styles
+    for all to anon, authenticated
+    using (false) with check (false);
