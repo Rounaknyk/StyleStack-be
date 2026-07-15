@@ -5,7 +5,10 @@ import logging
 from PIL import Image, ImageOps
 
 from app.core.config import get_settings
-from app.services.fashion_segmentation import isolate_garment_on_white
+from app.services.fashion_segmentation import (
+    isolate_garment_on_transparent,
+    isolate_garment_on_white,
+)
 
 logger = logging.getLogger("stylestack.images")
 
@@ -82,8 +85,21 @@ def put_item_on_white_background(contents: bytes, category: str | None = None) -
     return result
 
 
-def put_item_on_transparent_background(contents: bytes) -> bytes:
+def put_item_on_transparent_background(
+    contents: bytes, category: str | None = None
+) -> bytes:
     """Remove the background while preserving the complete source canvas as PNG."""
+    settings = get_settings()
+    if settings.fashion_segmentation_enabled and category:
+        try:
+            fashion_result = isolate_garment_on_transparent(contents, category)
+            if fashion_result:
+                return fashion_result
+        except Exception as exc:
+            logger.warning(
+                "fashion_transparent_segmentation_failed category=%s error_type=%s",
+                category, type(exc).__name__,
+            )
     from rembg import remove
 
     source = ImageOps.exif_transpose(Image.open(BytesIO(contents))).convert("RGBA")

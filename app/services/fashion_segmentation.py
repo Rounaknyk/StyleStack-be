@@ -161,3 +161,34 @@ def isolate_garment_on_white(contents: bytes, category: str) -> bytes | None:
         category, target_ratio, person_ratio,
     )
     return output.getvalue()
+
+
+def isolate_garment_on_transparent(contents: bytes, category: str) -> bytes | None:
+    """Return a full-canvas PNG cutout for person-worn garment photos."""
+    target_labels = CATEGORY_LABELS.get(category.strip().casefold())
+    if not target_labels:
+        return None
+    source = ImageOps.exif_transpose(Image.open(BytesIO(contents))).convert("RGBA")
+    labels = _segmentation_map(source)
+    target = np.isin(labels, list(target_labels))
+    person = np.isin(labels, list(PERSON_LABELS))
+    target_ratio = float(target.mean())
+    if target_ratio < 0.004 or target_ratio > 0.80 or float(person.mean()) < 0.02:
+        return None
+    mask = Image.fromarray((target * 255).astype(np.uint8), mode="L").resize(
+        source.size, Image.Resampling.NEAREST
+    )
+    filter_size = _adaptive_odd_filter_size(source.size)
+    blur_radius = max(1.0, min(2.5, min(source.size) * 0.0015))
+    mask = mask.filter(ImageFilter.MaxFilter(filter_size)).filter(
+        ImageFilter.GaussianBlur(blur_radius)
+    )
+    garment = Image.new("RGBA", source.size, (0, 0, 0, 0))
+    garment.paste(source, (0, 0), mask)
+    output = BytesIO()
+    garment.save(output, "PNG", optimize=True)
+    logger.info(
+        "fashion_garment_cutout category=%s garment_ratio=%.3f",
+        category, target_ratio,
+    )
+    return output.getvalue()

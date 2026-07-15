@@ -119,7 +119,7 @@ class BackgroundJobQueue:
             cutout = None
             if settings.background_removal_enabled:
                 try:
-                    cutout = put_item_on_transparent_background(original)
+                    cutout = put_item_on_transparent_background(original, job.category)
                     bucket.upload(
                         path=cutout_path,
                         file=cutout,
