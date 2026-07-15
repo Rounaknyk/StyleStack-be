@@ -100,6 +100,56 @@ async def create_canvas_style(
         raise HTTPException(status_code=502, detail="Could not save this style") from exc
 
 
+@router.put("/styles/{style_id}", response_model=CanvasStyleResponse)
+async def update_canvas_style(
+    style_id: UUID,
+    current_user: CurrentUser,
+    name: Annotated[str, Form(min_length=1, max_length=120)],
+    items: Annotated[str, Form(description="JSON array of positioned wardrobe items")],
+    preview_image: Annotated[UploadFile, File(description="PNG canvas preview")],
+) -> dict[str, Any]:
+    parsed_items = _parse_items(items)
+    if not parsed_items:
+        raise HTTPException(status_code=422, detail="Add at least one item to the canvas")
+    content_type = (preview_image.content_type or "").lower()
+    if content_type not in {"image/png", "image/jpeg", "image/webp"}:
+        raise HTTPException(status_code=415, detail="Preview must be PNG, JPEG, or WebP")
+    preview_bytes = await preview_image.read(MAX_PREVIEW_BYTES + 1)
+    await preview_image.close()
+    if not preview_bytes:
+        raise HTTPException(status_code=422, detail="Preview image is empty")
+    if len(preview_bytes) > MAX_PREVIEW_BYTES:
+        raise HTTPException(status_code=413, detail="Preview image exceeds 8 MB")
+    client = get_supabase_client()
+    uid = current_user["uid"]
+    existing = client.table("canvas_styles").select("preview_path").eq("id", str(style_id)).eq("owner_firebase_uid", uid).limit(1).execute().data or []
+    if not existing:
+        raise HTTPException(status_code=404, detail="Canvas style not found")
+    ids = list(dict.fromkeys(str(item.item_id) for item in parsed_items))
+    owned = client.table("wardrobe_items").select("id").eq("owner_firebase_uid", uid).in_("id", ids).execute().data or []
+    if {str(row["id"]) for row in owned} != set(ids):
+        raise HTTPException(status_code=422, detail="Every canvas item must belong to your wardrobe")
+    extension = ".png" if content_type == "image/png" else ".jpg"
+    preview_path = existing[0].get("preview_path") or f"{uid}/canvas/{style_id}{extension}"
+    bucket = client.storage.from_(get_settings().supabase_storage_bucket)
+    try:
+        bucket.upload(path=preview_path, file=preview_bytes, file_options={"content-type": content_type, "upsert": "true"})
+        response = client.table("canvas_styles").update({
+            "name": name.strip(),
+            "preview_path": preview_path,
+            "items": [item.model_dump(mode="json") for item in parsed_items],
+        }).eq("id", str(style_id)).eq("owner_firebase_uid", uid).execute()
+        if not response.data:
+            raise RuntimeError("Supabase returned no updated canvas style")
+        logger.info("canvas_style_updated uid=%s style_id=%s items=%s", uid, style_id, len(parsed_items))
+        return _signed(response.data[0], client)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("canvas_style_update_failed uid=%s style_id=%s error_type=%s", uid, style_id, type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Could not update this style") from exc
+
+
 @router.get("/styles", response_model=list[CanvasStyleResponse])
 def list_canvas_styles(current_user: CurrentUser) -> list[dict[str, Any]]:
     client = get_supabase_client()

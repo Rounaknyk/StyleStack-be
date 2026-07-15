@@ -82,6 +82,37 @@ def put_item_on_white_background(contents: bytes, category: str | None = None) -
     return result
 
 
+def put_item_on_transparent_background(contents: bytes) -> bytes:
+    """Remove the background while preserving the complete source canvas as PNG."""
+    from rembg import remove
+
+    source = ImageOps.exif_transpose(Image.open(BytesIO(contents))).convert("RGBA")
+    isolated = remove(
+        source,
+        session=_background_session(),
+        alpha_matting=True,
+        alpha_matting_foreground_threshold=240,
+        alpha_matting_background_threshold=10,
+        alpha_matting_erode_size=5,
+        post_process_mask=True,
+    )
+    if not isinstance(isolated, Image.Image):
+        isolated = Image.open(BytesIO(isolated)).convert("RGBA")
+    else:
+        isolated = isolated.convert("RGBA")
+    if isolated.size != source.size:
+        raise RuntimeError("Transparent background removal changed the source canvas")
+    alpha = isolated.getchannel("A")
+    if alpha.getbbox() is None:
+        raise RuntimeError("Transparent background removal erased the entire item")
+    output = BytesIO()
+    isolated.save(output, format="PNG", optimize=True)
+    result = output.getvalue()
+    if not result:
+        raise RuntimeError("Transparent cutout is empty")
+    return result
+
+
 def optimize_item_image(
     contents: bytes,
     *,

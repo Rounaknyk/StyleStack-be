@@ -85,10 +85,12 @@ def add_signed_image_url(client: Client, item: dict[str, Any]) -> dict[str, Any]
     result = dict(item)
     result["image_url"] = None
     result["thumbnail_url"] = None
+    result["cutout_url"] = None
     bucket = client.storage.from_(get_settings().supabase_storage_bucket)
     for path_field, url_field in (
         ("image_path", "image_url"),
         ("thumbnail_path", "thumbnail_url"),
+        ("cutout_path", "cutout_url"),
     ):
         image_path = result.get(path_field)
         if not image_path:

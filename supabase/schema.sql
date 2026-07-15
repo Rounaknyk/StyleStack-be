@@ -178,6 +178,7 @@ create table if not exists public.wardrobe_items (
     currency char(3),
     image_path text,
     thumbnail_path text,
+    cutout_path text,
     is_favorite boolean not null default false,
     tagged boolean not null default false,
     ai_tag_status text not null default 'pending'

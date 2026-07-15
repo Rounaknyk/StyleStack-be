@@ -13,6 +13,7 @@ from app.services.ai_tagging import analyze_clothing_image
 from app.services.image_processing import (
     create_item_thumbnail,
     optimize_item_image,
+    put_item_on_transparent_background,
     put_item_on_white_background,
 )
 
@@ -96,7 +97,9 @@ class BackgroundJobQueue:
         bucket = client.storage.from_(settings.supabase_storage_bucket)
         processed_path = f"processed/{job.item_id}.jpg"
         thumbnail_path = f"thumbnails/{job.item_id}.jpg"
+        cutout_path = f"cutouts/{job.item_id}.png"
         images_ready = False
+        cutout_ready = False
 
         try:
             client.table("wardrobe_items").update(
@@ -113,8 +116,27 @@ class BackgroundJobQueue:
             if not original:
                 raise RuntimeError("Downloaded wardrobe image is empty")
 
-            prepared = original
+            cutout = None
             if settings.background_removal_enabled:
+                try:
+                    cutout = put_item_on_transparent_background(original)
+                    bucket.upload(
+                        path=cutout_path,
+                        file=cutout,
+                        file_options={"content-type": "image/png", "upsert": "true"},
+                    )
+                    cutout_ready = True
+                    logger.info("wardrobe_cutout_created item_id=%s bytes=%s", job.item_id, len(cutout))
+                except Exception as exc:
+                    logger.warning(
+                        "wardrobe_cutout_failed item_id=%s error_type=%s",
+                        job.item_id, type(exc).__name__,
+                    )
+
+            # The transparent cutout is also the best source for the white
+            # display image, so avoid running the heavy model twice.
+            prepared = cutout or original
+            if settings.background_removal_enabled and cutout is None:
                 try:
                     prepared = put_item_on_white_background(original, job.category)
                     logger.info("wardrobe_background_removed item_id=%s", job.item_id)
@@ -151,6 +173,8 @@ class BackgroundJobQueue:
                 "image_path": processed_path,
                 "thumbnail_path": thumbnail_path,
             }
+            if cutout_ready:
+                base_update["cutout_path"] = cutout_path
             if job.skip_ai:
                 client.table("wardrobe_items").update(
                     {**base_update, "tagged": True, "ai_tag_status": "completed"}
@@ -231,6 +255,8 @@ class BackgroundJobQueue:
                             "thumbnail_path": thumbnail_path,
                         }
                     )
+                    if cutout_ready:
+                        failure_update["cutout_path"] = cutout_path
                 client.table("wardrobe_items").update(
                     failure_update
                 ).eq("id", job.item_id).execute()

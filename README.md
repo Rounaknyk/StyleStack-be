@@ -280,6 +280,7 @@ layout JSON plus a private Supabase Storage preview:
 
 ```text
 POST   /api/v1/canvas/styles
+PUT    /api/v1/canvas/styles/{id}
 GET    /api/v1/canvas/styles
 GET    /api/v1/canvas/styles/{id}
 DELETE /api/v1/canvas/styles/{id}
@@ -289,7 +290,10 @@ DELETE /api/v1/canvas/styles/{id}
 `item_id`, `x`, `y`, `scale`, and `rotation`), and `preview_image`. The API
 checks every item belongs to the Firebase-authenticated user before saving.
 Run [`202607150003_add_canvas_styles.sql`](supabase/migrations/202607150003_add_canvas_styles.sql)
-before using this feature on an existing Supabase project.
+and [`202607150004_add_wardrobe_cutouts.sql`](supabase/migrations/202607150004_add_wardrobe_cutouts.sql)
+before using this feature on an existing Supabase project. New wardrobe uploads
+also receive a transparent `cutout_url`; the canvas uses it when available and
+falls back to the optimized image for older items.
 
 ### Morning notifications
 
