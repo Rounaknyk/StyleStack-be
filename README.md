@@ -42,6 +42,11 @@ Do not send the Firebase refresh token or the service-account key to this API.
 2. Open **SQL Editor**, paste [`supabase/schema.sql`](supabase/schema.sql), and run it. This creates the profile, wardrobe item, and wear-log tables plus the private `wardrobe-images` bucket. The script is safe to rerun when applying these additions to an existing project.
 3. Copy the project URL and `service_role` key from Supabase project settings into `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
 
+If the project already exists and the API reports that an onboarding profile
+column does not exist, run the focused
+[`202607150001_add_onboarding_profiles.sql`](supabase/migrations/202607150001_add_onboarding_profiles.sql)
+migration in the SQL Editor. It is idempotent and preserves existing profiles.
+
 The service-role key bypasses Row Level Security, so it must exist only in this backend. The schema enables RLS without client policies, denying direct browser/mobile access by default. Backend routes should always scope queries by the verified Firebase `uid`, for example:
 
 ```python

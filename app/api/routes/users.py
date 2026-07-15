@@ -1,8 +1,10 @@
+import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, status
 from firebase_admin import messaging
+from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field
 
 from app.dependencies.auth import CurrentUser
@@ -21,12 +23,54 @@ from app.services.notifications import notification_scheduler
 from app.services.wardrobe import ensure_profile
 
 router = APIRouter()
+logger = logging.getLogger("stylestack.users")
 
 ONBOARDING_PROFILE_FIELDS = (
     "display_name,gender_identity,date_of_birth,body_type,height_cm,"
     "style_preferences,shopping_frequency,onboarding_goals,"
     "onboarding_completed,onboarding_completed_at,onboarding_version"
 )
+ONBOARDING_SCHEMA_COLUMNS = frozenset(
+    {
+        "gender_identity",
+        "date_of_birth",
+        "body_type",
+        "height_cm",
+        "style_preferences",
+        "shopping_frequency",
+        "onboarding_goals",
+        "onboarding_completed",
+        "onboarding_completed_at",
+        "onboarding_version",
+    }
+)
+ONBOARDING_SCHEMA_ERROR_DETAIL = (
+    "Onboarding is temporarily unavailable because the Supabase database schema "
+    "is out of date. Apply the latest StyleStack schema migration, then try again."
+)
+
+
+def _execute_onboarding_query(query):
+    """Execute an onboarding query with a clear stale-schema response."""
+    try:
+        return query.execute()
+    except APIError as exc:
+        message = str(exc.message or "").lower()
+        is_missing_column = exc.code in {"42703", "PGRST204"}
+        is_onboarding_column = any(
+            column in message for column in ONBOARDING_SCHEMA_COLUMNS
+        )
+        if is_missing_column and is_onboarding_column:
+            logger.error(
+                "onboarding_schema_outdated code=%s message=%s",
+                exc.code,
+                exc.message,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=ONBOARDING_SCHEMA_ERROR_DETAIL,
+            ) from exc
+        raise
 
 
 class CurrentUserResponse(BaseModel):
@@ -51,15 +95,13 @@ def read_onboarding(current_user: CurrentUser) -> dict:
     """Return onboarding state, creating the Firebase-backed profile if needed."""
     client = get_supabase_client()
     ensure_profile(client, current_user)
-    rows = (
+    query = (
         client.table("profiles")
         .select(ONBOARDING_PROFILE_FIELDS)
         .eq("firebase_uid", current_user["uid"])
         .limit(1)
-        .execute()
-        .data
-        or []
     )
+    rows = _execute_onboarding_query(query).data or []
     if not rows:
         raise HTTPException(status_code=404, detail="Profile not found")
     return rows[0]
@@ -80,14 +122,12 @@ def complete_onboarding(
             "onboarding_version": 1,
         }
     )
-    rows = (
+    query = (
         client.table("profiles")
         .update(updates)
         .eq("firebase_uid", current_user["uid"])
-        .execute()
-        .data
-        or []
     )
+    rows = _execute_onboarding_query(query).data or []
     if not rows:
         raise HTTPException(status_code=404, detail="Profile not found")
     return rows[0]
