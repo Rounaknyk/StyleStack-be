@@ -255,6 +255,16 @@ create table if not exists public.outfit_items (
     primary key (outfit_id, wardrobe_item_id)
 );
 
+create table if not exists public.canvas_styles (
+    id uuid primary key default gen_random_uuid(),
+    owner_firebase_uid text not null references public.profiles(firebase_uid) on delete cascade,
+    name text not null,
+    preview_path text,
+    items jsonb not null default '[]'::jsonb,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
 create table if not exists public.device_tokens (
     id uuid primary key default gen_random_uuid(),
     owner_firebase_uid text not null references public.profiles(firebase_uid) on delete cascade,
@@ -337,6 +347,8 @@ create index if not exists wear_logs_item_worn_at_idx
     on public.wear_logs (wardrobe_item_id, worn_at desc);
 create index if not exists outfits_owner_created_idx
     on public.outfits (owner_firebase_uid, created_at desc);
+create index if not exists canvas_styles_owner_created_idx
+    on public.canvas_styles (owner_firebase_uid, created_at desc);
 create index if not exists device_tokens_owner_idx
     on public.device_tokens (owner_firebase_uid);
 create index if not exists calendar_events_owner_start_idx
@@ -373,6 +385,11 @@ create trigger calendar_events_set_updated_at
 before update on public.calendar_events
 for each row execute function public.set_updated_at();
 
+drop trigger if exists canvas_styles_set_updated_at on public.canvas_styles;
+create trigger canvas_styles_set_updated_at
+before update on public.canvas_styles
+for each row execute function public.set_updated_at();
+
 -- The FastAPI server uses the Supabase service-role key and enforces access by
 -- verified Firebase UID. RLS is enabled to deny direct client access by default.
 alter table public.profiles enable row level security;
@@ -380,6 +397,7 @@ alter table public.wardrobe_items enable row level security;
 alter table public.wear_logs enable row level security;
 alter table public.outfits enable row level security;
 alter table public.outfit_items enable row level security;
+alter table public.canvas_styles enable row level security;
 alter table public.device_tokens enable row level security;
 alter table public.calendar_events enable row level security;
 alter table public.app_notifications enable row level security;

@@ -272,6 +272,25 @@ POST /api/v1/outfits/{outfit_id}/wear
 Authorization: Bearer <firebase-id-token>
 ```
 
+### Canvas Style Builder
+
+The Flutter canvas lets a user arrange owned wardrobe pieces with drag, scale,
+and rotate gestures. Saving captures the canvas as a PNG and persists the
+layout JSON plus a private Supabase Storage preview:
+
+```text
+POST   /api/v1/canvas/styles
+GET    /api/v1/canvas/styles
+GET    /api/v1/canvas/styles/{id}
+DELETE /api/v1/canvas/styles/{id}
+```
+
+`POST` is multipart form data with `name`, `items` (a JSON array containing
+`item_id`, `x`, `y`, `scale`, and `rotation`), and `preview_image`. The API
+checks every item belongs to the Firebase-authenticated user before saving.
+Run [`202607150003_add_canvas_styles.sql`](supabase/migrations/202607150003_add_canvas_styles.sql)
+before using this feature on an existing Supabase project.
+
 ### Morning notifications
 
 The Flutter app stores city, IANA timezone, notification time, and opt-in state through:
