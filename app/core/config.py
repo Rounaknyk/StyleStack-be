@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     groq_request_timeout_seconds: float = 30.0
     gemini_api_key: str | None = None
     gemini_vision_model: str = "gemini-flash-latest"
+    pexels_api_key: str | None = None
+    pexels_base_url: str = "https://api.pexels.com/v1"
+    pexels_request_timeout_seconds: float = 8.0
 
     openweather_api_key: str | None = None
     openweather_base_url: str = "https://api.openweathermap.org/data/2.5"

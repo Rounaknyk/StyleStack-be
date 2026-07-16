@@ -28,6 +28,7 @@ class OutfitResponse(BaseModel):
     item_ids: list[UUID]
     items: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime
+    inspiration_images: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class OutfitWearResponse(BaseModel):

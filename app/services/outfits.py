@@ -12,6 +12,7 @@ from app.models.outfit import WeatherResponse
 from app.prompts.outfit_stylist import build_stylist_prompt
 from app.services.wardrobe import add_signed_image_url
 from app.services.weather import get_current_weather
+from app.services.inspiration import fetch_outfit_inspiration
 
 logger = logging.getLogger("stylestack.outfits")
 
@@ -195,6 +196,7 @@ def create_outfit_suggestion(
     selected = [items_by_id[item_id] for item_id in selected_ids if item_id in items_by_id]
     outfit["item_ids"] = selected_ids
     outfit["items"] = [add_signed_image_url(client, item) for item in selected]
+    outfit["inspiration_images"] = fetch_outfit_inspiration(selected, occasion, style_profile)
     logger.info("outfit_created uid=%s outfit_id=%s items=%s", uid, outfit["id"], len(selected_ids))
     return outfit
 
