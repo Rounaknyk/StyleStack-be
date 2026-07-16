@@ -1,8 +1,8 @@
-"""Optional local CLIP relevance scoring for inspiration images.
+"""Local CLIP relevance scoring for inspiration images.
 
-CLIP is deliberately loaded lazily. The core API can run without the large
-PyTorch/Transformers dependency; enabling this check requires installing the
-packages in requirements-clip.txt and setting INSPIRATION_CLIP_ENABLED=true.
+CLIP is loaded lazily so API startup does not download model weights. The
+inspiration route requires the packages in requirements-clip.txt and uses this
+score as its sole image acceptance signal.
 """
 
 from __future__ import annotations

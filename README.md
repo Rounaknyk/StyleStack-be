@@ -262,7 +262,7 @@ PEXELS_API_KEY=your-pexels-api-key
 PEXELS_BASE_URL=https://api.pexels.com/v1
 PEXELS_REQUEST_TIMEOUT_SECONDS=8
 PEXELS_RESULTS_PER_REQUEST=10
-INSPIRATION_CLIP_ENABLED=false
+INSPIRATION_CLIP_ENABLED=true
 INSPIRATION_CLIP_MODEL=openai/clip-vit-base-patch32
 INSPIRATION_CLIP_THRESHOLD=0.28
 INSPIRATION_CLIP_REQUEST_TIMEOUT_SECONDS=12
@@ -276,23 +276,17 @@ colors, occasion, and ethnic/western style context. Inspiration failures never
 block outfit generation. Keep the Pexels key server-side and rotate any key
 that has been pasted into chat, source control, or logs.
 
-Before returning a reference, StyleStack applies a conservative metadata gate.
-It rejects catalog/logo/flat-lay results, requires a worn-person signal, and
-requires every distinct wardrobe category to be represented. For stronger
-visual validation, install the optional local CLIP stack and enable it:
-
-The metadata gate also requires each wardrobe item's category and color to be
-present together in the candidate description. This intentionally produces no
-reference when Pexels cannot verify an exact combination such as a white shirt
-with white pants, rather than showing a colorful look that only matches the
-garment types.
+Before returning a reference, StyleStack uses local CLIP image/text similarity
+as the sole acceptance signal. Pexels metadata is not used to accept or reject
+images, so a caption that says “shirt” cannot incorrectly make an orange shirt
+pass a white-shirt outfit. Install the local CLIP stack before running the API:
 
 ```bash
 pip install -r requirements-clip.txt
 ```
 
-With `INSPIRATION_CLIP_ENABLED=true`, each metadata-approved image is fetched
-and scored locally against a description of the complete suggested outfit.
+Each candidate is fetched and scored locally against a description of the
+complete suggested outfit.
 Images below `INSPIRATION_CLIP_THRESHOLD` are rejected, and CLIP failures are
 fail-closed (the image is not shown). The first request downloads the selected
 Hugging Face model, so keep this disabled on small instances unless the extra
