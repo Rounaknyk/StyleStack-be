@@ -281,6 +281,12 @@ It rejects catalog/logo/flat-lay results, requires a worn-person signal, and
 requires every distinct wardrobe category to be represented. For stronger
 visual validation, install the optional local CLIP stack and enable it:
 
+The metadata gate also requires each wardrobe item's category and color to be
+present together in the candidate description. This intentionally produces no
+reference when Pexels cannot verify an exact combination such as a white shirt
+with white pants, rather than showing a colorful look that only matches the
+garment types.
+
 ```bash
 pip install -r requirements-clip.txt
 ```
