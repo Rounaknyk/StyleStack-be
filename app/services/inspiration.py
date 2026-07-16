@@ -145,9 +145,11 @@ def _relevance_score(photo: dict[str, Any], items: list[dict[str, Any]]) -> tupl
                 color,
                 all_category_terms,
             )
-        # Missing color metadata is tolerated so Pexels images are not all
-        # discarded. An explicitly described conflicting color is rejected.
-        color_match = not color or color == "multicolor" or relation != "conflict"
+        # Fail closed for known colors: generic metadata such as "shirt and
+        # pants" cannot verify a white outfit, and an explicitly conflicting
+        # color must never pass. This may return zero references, which is
+        # preferable to showing a visibly inaccurate look.
+        color_match = not color or color == "multicolor" or relation == "match"
         if category_match and color_match:
             item_matches += 1
     # Category evidence matters more than color: a white shirt reference is
