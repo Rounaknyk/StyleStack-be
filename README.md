@@ -262,7 +262,7 @@ PEXELS_API_KEY=your-pexels-api-key
 PEXELS_BASE_URL=https://api.pexels.com/v1
 PEXELS_REQUEST_TIMEOUT_SECONDS=8
 PEXELS_RESULTS_PER_REQUEST=10
-INSPIRATION_CLIP_ENABLED=true
+INSPIRATION_CLIP_ENABLED=false
 INSPIRATION_CLIP_MODEL=openai/clip-vit-base-patch32
 INSPIRATION_CLIP_THRESHOLD=0.28
 INSPIRATION_CLIP_REQUEST_TIMEOUT_SECONDS=12
@@ -276,17 +276,19 @@ colors, occasion, and ethnic/western style context. Inspiration failures never
 block outfit generation. Keep the Pexels key server-side and rotate any key
 that has been pasted into chat, source control, or logs.
 
-Before returning a reference, StyleStack uses local CLIP image/text similarity
-as the sole acceptance signal. Pexels metadata is not used to accept or reject
-images, so a caption that says “shirt” cannot incorrectly make an orange shirt
-pass a white-shirt outfit. Install the local CLIP stack before running the API:
+Local CLIP image/text similarity is available as an opt-in visual validator.
+It is disabled by default because the model download is roughly 600 MB. When
+disabled, the inspiration feature fails closed and returns no references; this
+avoids showing inaccurate images without downloading a model. To enable it
+deliberately, install the optional stack:
 
 ```bash
 pip install -r requirements-clip.txt
 ```
 
-Each candidate is fetched and scored locally against a description of the
-complete suggested outfit.
+Each candidate is then fetched and scored locally against a description of the
+complete suggested outfit. This requires downloading the configured model on
+the first request.
 Images below `INSPIRATION_CLIP_THRESHOLD` are rejected, and CLIP failures are
 fail-closed (the image is not shown). The first request downloads the selected
 Hugging Face model, so keep this disabled on small instances unless the extra

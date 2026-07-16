@@ -42,8 +42,8 @@ class Settings(BaseSettings):
     pexels_base_url: str = "https://api.pexels.com/v1"
     pexels_request_timeout_seconds: float = 8.0
     pexels_results_per_request: int = 10
-    # CLIP is the sole acceptance signal for Pexels inspiration references.
-    inspiration_clip_enabled: bool = True
+    # Disabled by default: local CLIP downloads a roughly 600 MB model.
+    inspiration_clip_enabled: bool = False
     inspiration_clip_model: str = "openai/clip-vit-base-patch32"
     inspiration_clip_threshold: float = 0.28
     inspiration_clip_request_timeout_seconds: float = 12.0
