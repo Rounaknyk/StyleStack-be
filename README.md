@@ -258,7 +258,16 @@ Set these values in `.env`:
 ```env
 OPENWEATHER_API_KEY=your-openweather-api-key
 OPENWEATHER_BASE_URL=https://api.openweathermap.org/data/2.5
+PEXELS_API_KEY=your-pexels-api-key
+PEXELS_BASE_URL=https://api.pexels.com/v1
+PEXELS_REQUEST_TIMEOUT_SECONDS=8
 ```
+
+When configured, outfit suggestions also include up to four optional Pexels
+style references. They are searched from the suggested wardrobe categories,
+colors, occasion, and ethnic/western style context. Inspiration failures never
+block outfit generation. Keep the Pexels key server-side and rotate any key
+that has been pasted into chat, source control, or logs.
 
 Generate an outfit using owned wardrobe items, current weather, occasion, and wear history:
 
