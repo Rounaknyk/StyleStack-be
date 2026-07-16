@@ -8,6 +8,38 @@ from app.core.config import get_settings
 
 logger = logging.getLogger("stylestack.inspiration")
 
+_CATEGORY_TERMS = {
+    "shirt": {"shirt", "top", "blouse", "button"},
+    "pants": {"pant", "trouser", "jean", "chino", "short"},
+    "dress": {"dress", "gown"},
+    "jacket": {"jacket", "coat", "blazer", "hoodie", "sweater"},
+    "shoes": {"shoe", "sneaker", "boot", "sandal", "loafer"},
+    "accessory": {"hat", "cap", "bag", "watch", "jewelry", "scarf"},
+    "kurta": {"kurta", "kurti"}, "saree": {"saree", "sari"},
+    "lehenga": {"lehenga"}, "sherwani": {"sherwani"},
+    "salwar": {"salwar", "suit"}, "dhoti": {"dhoti"},
+    "dupatta": {"dupatta", "scarf"}, "blouse": {"blouse"},
+    "anarkali": {"anarkali"}, "ethnic_set": {"ethnic", "traditional"},
+}
+
+
+def _relevance_score(photo: dict[str, Any], items: list[dict[str, Any]]) -> tuple[float, int, int]:
+    """Score only text metadata; this intentionally makes no AI/image call."""
+    text = " ".join(
+        str(photo.get(field) or "") for field in ("alt", "url")
+    ).casefold()
+    categories = [str(item.get("category") or item.get("ai_category") or "").casefold() for item in items]
+    colors = [str(item.get("color") or item.get("ai_color") or "").casefold() for item in items]
+    category_hits = sum(
+        any(term in text for term in _CATEGORY_TERMS.get(category, {category}))
+        for category in categories
+    )
+    color_hits = sum(color in text for color in colors if color and color != "multicolor")
+    total_signals = len(categories) + sum(bool(color and color != "multicolor") for color in colors)
+    matched_signals = category_hits + color_hits
+    score = matched_signals / total_signals if total_signals else 0.0
+    return score, category_hits, color_hits
+
 
 def _query_for(items: list[dict[str, Any]], occasion: str, profile: dict[str, Any] | None) -> str:
     categories = [str(item.get("category") or item.get("ai_category") or "") for item in items]
@@ -60,8 +92,9 @@ def fetch_outfit_inspiration(
             )
             response.raise_for_status()
         photos = response.json().get("photos", [])
-        results = [
-            {
+        results = []
+        for photo in photos:
+            result = {
                 "id": photo.get("id"),
                 "url": photo.get("url"),
                 "image_url": (photo.get("src") or {}).get("original")
@@ -70,11 +103,18 @@ def fetch_outfit_inspiration(
                 "alt": photo.get("alt") or "Style inspiration",
                 "photographer": photo.get("photographer") or "Pexels creator",
             }
-            for photo in photos
-            if (photo.get("src") or {}).get("original")
+            if not ((photo.get("src") or {}).get("original")
             or (photo.get("src") or {}).get("large")
-            or (photo.get("src") or {}).get("medium")
-        ]
+            or (photo.get("src") or {}).get("medium")):
+                continue
+            score, category_hits, color_hits = _relevance_score(result, items)
+            logger.info(
+                "outfit_inspiration_candidate id=%s score=%.2f category_hits=%s color_hits=%s accepted=%s alt=%r",
+                result["id"], score, category_hits, color_hits, score >= 0.5, result["alt"],
+            )
+            if score >= 0.5:
+                results.append((score, result))
+        results = [result for _, result in sorted(results, key=lambda pair: pair[0], reverse=True)[:2]]
         logger.info(
             "outfit_inspiration_response_ok status=%s photos=%s usable=%s",
             response.status_code, len(photos), len(results),
