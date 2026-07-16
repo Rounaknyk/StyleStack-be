@@ -1,0 +1,4 @@
+# Optional local visual relevance gate for Pexels inspiration results.
+# Install this in addition to requirements.txt when enabling CLIP.
+torch>=2.6.0
+transformers>=4.49.0

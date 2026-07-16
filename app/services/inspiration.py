@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 
 from app.core.config import get_settings
+from app.services.clip_relevance import score_if_enabled
 
 logger = logging.getLogger("stylestack.inspiration")
 
@@ -159,9 +160,26 @@ def fetch_outfit_inspiration(
             # requires an explicit category match.
             category_coverage = category_hits / category_total if category_total else 0.0
             accepted = metadata_ok and category_coverage >= 1.0 and score >= 0.75
+            clip_score = None
+            if accepted and settings.inspiration_clip_enabled:
+                try:
+                    clip_score = score_if_enabled(result["image_url"], items, occasion)
+                    accepted = clip_score is not None and clip_score >= settings.inspiration_clip_threshold
+                    gate_reason = "clip_pass" if accepted else "clip_below_threshold"
+                except Exception as exc:
+                    # Do not show an unverified image when visual validation is
+                    # explicitly enabled. This is intentionally fail-closed.
+                    accepted = False
+                    gate_reason = f"clip_failed:{type(exc).__name__}"
+                    logger.warning(
+                        "outfit_inspiration_clip_failed id=%s error_type=%s",
+                        result["id"], type(exc).__name__,
+                    )
             logger.info(
-                "outfit_inspiration_candidate id=%s score=%.2f category_hits=%s/%s color_hits=%s/%s gate=%s accepted=%s alt=%r",
-                result["id"], score, category_hits, category_total, color_hits, color_total,
+                "outfit_inspiration_candidate id=%s metadata_score=%.2f clip_score=%s category_hits=%s/%s color_hits=%s/%s gate=%s accepted=%s alt=%r",
+                result["id"], score,
+                f"{clip_score:.3f}" if clip_score is not None else "disabled",
+                category_hits, category_total, color_hits, color_total,
                 gate_reason, accepted, result["alt"],
             )
             if accepted:

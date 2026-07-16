@@ -261,13 +261,34 @@ OPENWEATHER_BASE_URL=https://api.openweathermap.org/data/2.5
 PEXELS_API_KEY=your-pexels-api-key
 PEXELS_BASE_URL=https://api.pexels.com/v1
 PEXELS_REQUEST_TIMEOUT_SECONDS=8
+INSPIRATION_CLIP_ENABLED=false
+INSPIRATION_CLIP_MODEL=openai/clip-vit-base-patch32
+INSPIRATION_CLIP_THRESHOLD=0.28
+INSPIRATION_CLIP_REQUEST_TIMEOUT_SECONDS=12
 ```
 
-When configured, outfit suggestions also include up to four optional Pexels
+When configured, outfit suggestions also include up to two optional Pexels
 style references. They are searched from the suggested wardrobe categories,
 colors, occasion, and ethnic/western style context. Inspiration failures never
 block outfit generation. Keep the Pexels key server-side and rotate any key
 that has been pasted into chat, source control, or logs.
+
+Before returning a reference, StyleStack applies a conservative metadata gate.
+It rejects catalog/logo/flat-lay results, requires a worn-person signal, and
+requires every distinct wardrobe category to be represented. For stronger
+visual validation, install the optional local CLIP stack and enable it:
+
+```bash
+pip install -r requirements-clip.txt
+```
+
+With `INSPIRATION_CLIP_ENABLED=true`, each metadata-approved image is fetched
+and scored locally against a description of the complete suggested outfit.
+Images below `INSPIRATION_CLIP_THRESHOLD` are rejected, and CLIP failures are
+fail-closed (the image is not shown). The first request downloads the selected
+Hugging Face model, so keep this disabled on small instances unless the extra
+memory and disk are available. The threshold is a raw cosine-similarity value,
+not a calibrated human-percentage score; tune it using real examples.
 
 Generate an outfit using owned wardrobe items, current weather, occasion, and wear history:
 

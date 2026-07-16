@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     pexels_api_key: str | None = None
     pexels_base_url: str = "https://api.pexels.com/v1"
     pexels_request_timeout_seconds: float = 8.0
+    # Optional local visual validation for Pexels results. Disabled by default
+    # because the CLIP weights are large and should be downloaded deliberately.
+    inspiration_clip_enabled: bool = False
+    inspiration_clip_model: str = "openai/clip-vit-base-patch32"
+    inspiration_clip_threshold: float = 0.28
+    inspiration_clip_request_timeout_seconds: float = 12.0
 
     openweather_api_key: str | None = None
     openweather_base_url: str = "https://api.openweathermap.org/data/2.5"
