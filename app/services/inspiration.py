@@ -36,6 +36,10 @@ _REJECT_TERMS = {
     "catalog", "catalogue", "screenshot", "collage", "still life", "flat lay",
     "flatlay", "mannequin", "hanger", "costume rack", "store display",
 }
+_COLOR_TERMS = {
+    "black", "white", "red", "blue", "green", "yellow", "purple", "pink",
+    "brown", "grey", "gray", "orange", "beige", "cream", "maroon", "navy",
+}
 
 
 def _words(text: str) -> set[str]:
@@ -66,13 +70,13 @@ def _metadata_gate(photo: dict[str, Any]) -> tuple[bool, str]:
     return True, "human_fashion_metadata"
 
 
-def _near_category_color(
+def _category_color_relation(
     text: str,
     category_terms: set[str],
     color: str,
     all_category_terms: set[str],
-) -> bool:
-    """Require category/color words to describe the same garment phrase."""
+) -> str:
+    """Return match, conflict, or unknown for a garment's color metadata."""
     tokens = _tokens(text)
     category_words = {
         variant
@@ -84,10 +88,10 @@ def _near_category_color(
         for term in category_terms
         for variant in (term, f"{term}s", f"{term}es")
     }
-    color_word = next(iter(_words(color)), "")
     category_positions = [index for index, token in enumerate(tokens) if token in category_words]
     target_positions = [index for index, token in enumerate(tokens) if token in target_words]
-    color_positions = [index for index, token in enumerate(tokens) if token == color_word]
+    expected_color = next(iter(_words(color)), "")
+    color_positions = [index for index, token in enumerate(tokens) if token in _COLOR_TERMS]
     for color_index in color_positions:
         nearby = [
             category_index
@@ -100,8 +104,8 @@ def _near_category_color(
             # shirt merely because the words are close together.
             nearest = min(nearby, key=lambda index: abs(index - color_index))
             if nearest in target_positions and abs(nearest - color_index) <= 2:
-                return True
-    return False
+                return "match" if tokens[color_index] == expected_color else "conflict"
+    return "unknown"
 
 
 def _relevance_score(photo: dict[str, Any], items: list[dict[str, Any]]) -> tuple[float, int, int, int, int, int, int]:
@@ -133,19 +137,17 @@ def _relevance_score(photo: dict[str, Any], items: list[dict[str, Any]]) -> tupl
         category_match = any(
             _term_present(words, term) for term in _CATEGORY_TERMS.get(category, {category})
         )
-        color_match = (
-            not color
-            or color == "multicolor"
-            or (
-                _term_present(words, color)
-                and _near_category_color(
-                    text,
-                    _CATEGORY_TERMS.get(category, {category}),
-                    color,
-                    all_category_terms,
-                )
+        relation = "unknown"
+        if color and color != "multicolor":
+            relation = _category_color_relation(
+                text,
+                _CATEGORY_TERMS.get(category, {category}),
+                color,
+                all_category_terms,
             )
-        )
+        # Missing color metadata is tolerated so Pexels images are not all
+        # discarded. An explicitly described conflicting color is rejected.
+        color_match = not color or color == "multicolor" or relation != "conflict"
         if category_match and color_match:
             item_matches += 1
     # Category evidence matters more than color: a white shirt reference is
@@ -206,7 +208,7 @@ def fetch_outfit_inspiration(
             logger.warning(
                 "outfit_inspiration_response_failed status=%s body=%s",
                 response.status_code,
-                response.text[:2000].replace("\n", " "),
+                response.text[:500].replace("\n", " "),
             )
             response.raise_for_status()
         photos = response.json().get("photos", [])
