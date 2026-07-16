@@ -1,5 +1,6 @@
 import logging
 import json
+import re
 from typing import Any
 
 import httpx
@@ -8,6 +9,46 @@ from app.core.config import get_settings
 from app.services.clip_relevance import score_if_enabled
 
 logger = logging.getLogger("stylestack.inspiration")
+
+_CATEGORY_TERMS = {
+    "shirt": {"shirt", "top", "blouse", "button"}, "pants": {"pant", "trouser", "jean", "chino", "short"},
+    "dress": {"dress", "gown"}, "jacket": {"jacket", "coat", "blazer", "hoodie", "sweater"},
+    "shoes": {"shoe", "sneaker", "boot", "sandal", "loafer"}, "accessory": {"hat", "cap", "bag", "watch", "jewelry", "scarf"},
+    "kurta": {"kurta", "kurti"}, "saree": {"saree", "sari"}, "lehenga": {"lehenga"}, "sherwani": {"sherwani"},
+    "salwar": {"salwar", "suit"}, "dhoti": {"dhoti"}, "dupatta": {"dupatta", "scarf"}, "blouse": {"blouse"},
+    "anarkali": {"anarkali"}, "ethnic_set": {"ethnic", "traditional"},
+}
+_HUMAN_TERMS = {"person", "people", "man", "men", "woman", "women", "model", "wearing", "wear", "outfit", "fashion", "street", "look", "dressed"}
+_REJECT_TERMS = {"logo", "icon", "illustration", "graphic", "banner", "mockup", "product", "catalog", "catalogue", "screenshot", "collage", "flatlay", "mannequin", "hanger", "store display"}
+
+
+def _metadata_score(photo: dict[str, Any], items: list[dict[str, Any]]) -> tuple[float, str]:
+    text = " ".join(str(photo.get(field) or "") for field in ("alt", "url")).casefold()
+    words = set(re.findall(r"[a-z0-9]+", text))
+    if any(term in text for term in _REJECT_TERMS):
+        return 0.0, "rejected_catalog_metadata"
+    human = 1.0 if any(term in words for term in _HUMAN_TERMS) else 0.0
+    categories = list(dict.fromkeys(str(item.get("category") or item.get("ai_category") or "").casefold() for item in items))
+    colors = list(dict.fromkeys(str(item.get("color") or item.get("ai_color") or "").casefold() for item in items if str(item.get("color") or item.get("ai_color") or "").casefold() not in {"", "multicolor"}))
+    category_hits = sum(any(term in words or f"{term}s" in words for term in _CATEGORY_TERMS.get(category, {category})) for category in categories)
+    color_hits = sum(color in words for color in colors)
+    pair_hits = 0
+    for item in items:
+        category = str(item.get("category") or item.get("ai_category") or "").casefold()
+        color = str(item.get("color") or item.get("ai_color") or "").casefold()
+        if not color or color == "multicolor":
+            pair_hits += 1
+            continue
+        category_words = _CATEGORY_TERMS.get(category, {category})
+        if any(re.search(rf"\b{re.escape(color)}\b(?:\s+\w+){{0,2}}\s+\b{re.escape(term)}s?\b", text) for term in category_words):
+            pair_hits += 1
+    category_coverage = category_hits / len(categories) if categories else 0.0
+    color_coverage = color_hits / len(colors) if colors else 1.0
+    pair_coverage = pair_hits / len(items) if items else 0.0
+    score = (category_coverage * 0.45) + (color_coverage * 0.20) + (pair_coverage * 0.20) + (human * 0.15)
+    if human == 0 or category_coverage < 0.5 or pair_coverage < 1.0 or score < 0.60:
+        return score, "below_metadata_threshold"
+    return score, "metadata_pass"
 
 def _query_for(items: list[dict[str, Any]], occasion: str, profile: dict[str, Any] | None) -> str:
     categories = [str(item.get("category") or item.get("ai_category") or "") for item in items]
@@ -80,35 +121,29 @@ def fetch_outfit_inspiration(
             or (photo.get("src") or {}).get("medium")):
                 continue
             clip_score = None
-            accepted = False
-            gate_reason = "clip_below_threshold"
-            try:
-                # CLIP is the sole acceptance signal. Pexels alt text, URL
-                # wording, category matches, and color math are not used to
-                # accept or reject an image.
-                clip_score = score_if_enabled(result["image_url"], items, occasion)
-                accepted = (
-                    clip_score is not None
-                    and clip_score >= settings.inspiration_clip_threshold
-                )
-                gate_reason = "clip_pass" if accepted else "clip_below_threshold"
-            except Exception as exc:
-                # Fail closed when the local model cannot score an image.
-                gate_reason = f"clip_failed:{type(exc).__name__}"
-                logger.warning(
-                    "outfit_inspiration_clip_failed id=%s error_type=%s",
-                    result["id"], type(exc).__name__,
-                )
+            if settings.inspiration_clip_enabled:
+                try:
+                    clip_score = score_if_enabled(result["image_url"], items, occasion)
+                    accepted = clip_score is not None and clip_score >= settings.inspiration_clip_threshold
+                    gate_reason = "clip_pass" if accepted else "clip_below_threshold"
+                except Exception as exc:
+                    accepted = False
+                    gate_reason = f"clip_failed:{type(exc).__name__}"
+                    logger.warning("outfit_inspiration_clip_failed id=%s error_type=%s", result["id"], type(exc).__name__)
+            else:
+                metadata_score, gate_reason = _metadata_score(result, items)
+                accepted = metadata_score >= 0.60
             logger.info(
-                "outfit_inspiration_candidate id=%s clip_score=%s threshold=%.3f gate=%s accepted=%s",
+                "outfit_inspiration_candidate id=%s clip_score=%s metadata_gate=%s accepted=%s",
                 result["id"],
                 f"{clip_score:.3f}" if clip_score is not None else "disabled",
-                settings.inspiration_clip_threshold, gate_reason, accepted,
+                gate_reason, accepted,
             )
             if accepted:
-                results.append((clip_score, result))
+                results.append((clip_score if clip_score is not None else metadata_score, result))
         # Return every accepted candidate from this one Pexels request. The
-        # CLIP gate decides quality; there is no arbitrary two-image truncation.
+        # The active CLIP or metadata gate decides quality; there is no
+        # arbitrary two-image truncation.
         results = [result for _, result in sorted(results, key=lambda pair: pair[0], reverse=True)]
         logger.info(
             "outfit_inspiration_response_ok status=%s photos=%s usable=%s",

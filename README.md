@@ -278,8 +278,8 @@ that has been pasted into chat, source control, or logs.
 
 Local CLIP image/text similarity is available as an opt-in visual validator.
 It is disabled by default because the model download is roughly 600 MB. When
-disabled, the inspiration feature fails closed and returns no references; this
-avoids showing inaccurate images without downloading a model. To enable it
+disabled, StyleStack uses a lightweight metadata score (human/fashion context,
+category coverage, color coverage, and catalog rejection terms). To enable CLIP
 deliberately, install the optional stack:
 
 ```bash
