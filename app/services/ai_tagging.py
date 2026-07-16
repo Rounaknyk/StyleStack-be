@@ -66,7 +66,7 @@ def _log_provider_failure(provider: str, exc: Exception) -> None:
 
 TAGGING_PROMPT = """Analyze the primary clothing item in this image and return ONLY valid JSON with these fields:
 {
-  "category": "shirt|pants|dress|jacket|shoes|accessory|other",
+  "category": "shirt|pants|dress|jacket|shoes|accessory|kurta|saree|lehenga|sherwani|salwar|dhoti|dupatta|blouse|anarkali|ethnic_set|other",
   "color": "black|white|red|blue|green|yellow|purple|pink|brown|grey|orange|beige|multicolor",
   "season": "summer|winter|spring|autumn|all",
   "formality": "formal|semi-formal|casual|sporty",
@@ -76,13 +76,13 @@ TAGGING_PROMPT = """Analyze the primary clothing item in this image and return O
 }"""
 
 MULTI_ITEM_PROMPT = """Detect every clearly visible wardrobe-relevant item in this image.
-Treat tops, pants, dresses, jackets, shoes, bags, jewelry and other wearable accessories as separate items.
+Treat western garments and Indian ethnic garments (kurta, saree, lehenga, sherwani, salwar, dhoti, dupatta, blouse and anarkali) as separate wardrobe items. Bags, jewelry and other wearable accessories are also items.
 Ignore people, furniture, packaging and background objects. Do not invent hidden items.
 Return ONLY valid JSON in this exact shape:
 {
   "items": [
     {
-      "category": "shirt|pants|dress|jacket|shoes|accessory|other",
+      "category": "shirt|pants|dress|jacket|shoes|accessory|kurta|saree|lehenga|sherwani|salwar|dhoti|dupatta|blouse|anarkali|ethnic_set|other",
       "color": "black|white|red|blue|green|yellow|purple|pink|brown|grey|orange|beige|multicolor",
       "season": "summer|winter|spring|autumn|all",
       "formality": "formal|semi-formal|casual|sporty",
@@ -248,7 +248,7 @@ Return ONLY valid JSON in this exact shape:
   "items": [
     {{
       "detected_name": "concise garment name",
-      "category": "shirt|pants|dress|jacket|shoes|accessory|other",
+      "category": "shirt|pants|dress|jacket|shoes|accessory|kurta|saree|lehenga|sherwani|salwar|dhoti|dupatta|blouse|anarkali|ethnic_set|other",
       "color": "dominant color",
       "description": "specific visible description",
       "visual_tags": ["up to 10 stable visual traits"],

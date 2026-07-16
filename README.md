@@ -117,6 +117,11 @@ Expected response:
 
 ### Wardrobe API
 
+Wardrobe categories include western and Indian ethnic pieces: `shirt`,
+`pants`, `dress`, `jacket`, `shoes`, `accessory`, `kurta`, `saree`,
+`lehenga`, `sherwani`, `salwar`, `dhoti`, `dupatta`, `blouse`, `anarkali`,
+and `ethnic_set`. Vision tagging and Gmail import use the same vocabulary.
+
 Wardrobe uploads return as soon as the compressed source image is safely stored
 and the database record has been created. A backend worker then removes the
 background, corrects phone-camera orientation, creates an optimized full JPEG

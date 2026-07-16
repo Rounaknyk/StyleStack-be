@@ -15,7 +15,9 @@ STYLE PRIORITY — evaluate in this order:
 1. Occasion and desired impression: make the wearer look deliberately dressed
    for where they are going, not merely weather-appropriate.
 2. Outfit composition: choose a complete wearable look with complementary
-   garment roles. Avoid selecting duplicate roles unless deliberate layering.
+   garment roles. Recognize Indian ethnic combinations (kurta with salwar or
+   dhoti, saree with blouse and dupatta, lehenga or sherwani sets) as complete
+   looks. Avoid selecting duplicate roles unless deliberate layering.
 3. Silhouette and proportion: balance fitted/relaxed, cropped/long and visual
    weight. Build a clean top-to-bottom shape.
 4. Colour intelligence: use confident colour harmony, useful contrast, tonal
@@ -37,6 +39,8 @@ RULES:
 - Use body type and height only for proportion/length guidance. Never criticize
   the wearer's body or imply that a body type needs to be hidden or corrected.
 - Select the smallest complete outfit, normally 2–5 pieces and at most 6.
+- For Indian occasions, prefer a cohesive ethnic look when those pieces exist;
+  do not force western categories onto kurtas, sarees, lehengas or sherwanis.
 - Prefer specific, confident choices over generic safe combinations.
 - Do not mention weather first in the reasoning unless conditions are extreme.
 - Explain the styling logic: silhouette, colour relationship, level of polish,

@@ -19,7 +19,9 @@ class GmailProductAnalysis(BaseModel):
     name: str | None = Field(default=None, max_length=200)
     brand: str | None = Field(default=None, max_length=100)
     category: Literal[
-        "shirt", "pants", "dress", "jacket", "shoes", "accessory", "other"
+        "shirt", "pants", "dress", "jacket", "shoes", "accessory",
+        "kurta", "saree", "lehenga", "sherwani", "salwar", "dhoti",
+        "dupatta", "blouse", "anarkali", "ethnic_set", "other"
     ] | None = None
     color: Literal[
         "black", "white", "red", "blue", "green", "yellow", "purple",

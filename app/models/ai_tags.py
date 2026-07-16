@@ -5,7 +5,9 @@ from pydantic import BaseModel, Field
 
 class ClothingTags(BaseModel):
     category: Literal[
-        "shirt", "pants", "dress", "jacket", "shoes", "accessory", "other"
+        "shirt", "pants", "dress", "jacket", "shoes", "accessory",
+        "kurta", "saree", "lehenga", "sherwani", "salwar", "dhoti",
+        "dupatta", "blouse", "anarkali", "ethnic_set", "other"
     ]
     color: Literal[
         "black",

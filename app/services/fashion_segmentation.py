@@ -17,6 +17,13 @@ MODEL_PATH = Path.home() / ".stylestack" / "models" / "segformer_b2_clothes_quan
 CATEGORY_LABELS: dict[str, set[int]] = {
     "shirt": {4}, "shirts": {4}, "t-shirt": {4}, "top": {4}, "tops": {4},
     "jacket": {4}, "jackets": {4}, "dress": {5, 7}, "dresses": {5, 7},
+    # Indian ethnic garments mapped to the closest clothing classes in the
+    # segmentation model; AI tagging still keeps the precise category name.
+    "kurta": {4}, "kurtas": {4}, "sherwani": {4}, "sherwanis": {4},
+    "blouse": {4}, "blouses": {4}, "dupatta": {17}, "dupattas": {17},
+    "saree": {5, 7}, "sarees": {5, 7}, "lehenga": {5, 7}, "lehengas": {5, 7},
+    "anarkali": {5, 7}, "anarkalis": {5, 7}, "salwar": {6}, "suits": {6},
+    "dhoti": {6}, "dhotis": {6}, "ethnic_set": {4, 5, 6},
     "skirt": {5}, "skirts": {5}, "pants": {6}, "trousers": {6},
     "jeans": {6}, "shoe": {9, 10}, "shoes": {9, 10},
     "accessory": {1, 3, 8, 16, 17}, "accessories": {1, 3, 8, 16, 17},
