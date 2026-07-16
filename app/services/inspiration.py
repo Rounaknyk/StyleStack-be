@@ -1,5 +1,6 @@
 import logging
 import json
+import re
 from typing import Any
 
 import httpx
@@ -22,23 +23,66 @@ _CATEGORY_TERMS = {
     "anarkali": {"anarkali"}, "ethnic_set": {"ethnic", "traditional"},
 }
 
+# Pexels metadata is not a vision model, so be deliberately conservative. We
+# only show references that look like a person wearing an outfit and reject
+# common catalog/logo/object results before they reach the app.
+_HUMAN_TERMS = {
+    "person", "people", "man", "men", "woman", "women", "model", "wearing",
+    "wear", "outfit", "fashion", "streetstyle", "street", "look", "dressed",
+}
+_REJECT_TERMS = {
+    "logo", "icon", "illustration", "graphic", "banner", "mockup", "product",
+    "catalog", "catalogue", "screenshot", "collage", "still life", "flat lay",
+    "flatlay", "mannequin", "hanger", "costume rack", "store display",
+}
 
-def _relevance_score(photo: dict[str, Any], items: list[dict[str, Any]]) -> tuple[float, int, int]:
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.casefold()))
+
+
+def _term_present(words: set[str], term: str) -> bool:
+    """Match metadata terms without false positives such as 'coat' in 'coating'."""
+    term_words = _words(term)
+    if len(term_words) != 1:
+        return term_words.issubset(words)
+    word = next(iter(term_words))
+    return word in words or f"{word}s" in words or f"{word}es" in words
+
+
+def _metadata_gate(photo: dict[str, Any]) -> tuple[bool, str]:
+    alt = str(photo.get("alt") or "")
+    url = str(photo.get("url") or "")
+    words = _words(f"{alt} {url}")
+    if any(_term_present(words, term) for term in _REJECT_TERMS):
+        return False, "catalog_or_nonfashion_metadata"
+    if not any(_term_present(words, term) for term in _HUMAN_TERMS):
+        return False, "no_worn_person_metadata"
+    return True, "human_fashion_metadata"
+
+
+def _relevance_score(photo: dict[str, Any], items: list[dict[str, Any]]) -> tuple[float, int, int, int, int]:
     """Score only text metadata; this intentionally makes no AI/image call."""
     text = " ".join(
         str(photo.get(field) or "") for field in ("alt", "url")
     ).casefold()
-    categories = [str(item.get("category") or item.get("ai_category") or "").casefold() for item in items]
+    words = _words(text)
+    categories = list(dict.fromkeys(
+        str(item.get("category") or item.get("ai_category") or "").casefold()
+        for item in items
+        if str(item.get("category") or item.get("ai_category") or "").strip()
+    ))
     colors = [str(item.get("color") or item.get("ai_color") or "").casefold() for item in items]
-    category_hits = sum(
-        any(term in text for term in _CATEGORY_TERMS.get(category, {category}))
-        for category in categories
-    )
-    color_hits = sum(color in text for color in colors if color and color != "multicolor")
-    total_signals = len(categories) + sum(bool(color and color != "multicolor") for color in colors)
-    matched_signals = category_hits + color_hits
-    score = matched_signals / total_signals if total_signals else 0.0
-    return score, category_hits, color_hits
+    category_hits = sum(any(_term_present(words, term) for term in _CATEGORY_TERMS.get(category, {category})) for category in categories)
+    distinct_colors = list(dict.fromkeys(color for color in colors if color and color != "multicolor"))
+    color_hits = sum(_term_present(words, color) for color in distinct_colors)
+    category_coverage = category_hits / len(categories) if categories else 0.0
+    color_coverage = color_hits / len(distinct_colors) if distinct_colors else 1.0
+    # Category evidence matters more than color: a white shirt reference is
+    # useful even when the metadata omits the color, but a matching color alone
+    # must never make an unrelated image pass.
+    score = (category_coverage * 0.75) + (color_coverage * 0.25)
+    return score, category_hits, color_hits, len(categories), len(distinct_colors)
 
 
 def _query_for(items: list[dict[str, Any]], occasion: str, profile: dict[str, Any] | None) -> str:
@@ -107,12 +151,20 @@ def fetch_outfit_inspiration(
             or (photo.get("src") or {}).get("large")
             or (photo.get("src") or {}).get("medium")):
                 continue
-            score, category_hits, color_hits = _relevance_score(result, items)
+            metadata_ok, gate_reason = _metadata_gate(result)
+            score, category_hits, color_hits, category_total, color_total = _relevance_score(result, items)
+            # For multi-piece outfits require every distinct category in the
+            # metadata. This prevents a shirt-only photo from representing a
+            # shirt-and-pants recommendation. A single-piece outfit still
+            # requires an explicit category match.
+            category_coverage = category_hits / category_total if category_total else 0.0
+            accepted = metadata_ok and category_coverage >= 1.0 and score >= 0.75
             logger.info(
-                "outfit_inspiration_candidate id=%s score=%.2f category_hits=%s color_hits=%s accepted=%s alt=%r",
-                result["id"], score, category_hits, color_hits, score >= 0.5, result["alt"],
+                "outfit_inspiration_candidate id=%s score=%.2f category_hits=%s/%s color_hits=%s/%s gate=%s accepted=%s alt=%r",
+                result["id"], score, category_hits, category_total, color_hits, color_total,
+                gate_reason, accepted, result["alt"],
             )
-            if score >= 0.5:
+            if accepted:
                 results.append((score, result))
         results = [result for _, result in sorted(results, key=lambda pair: pair[0], reverse=True)[:2]]
         logger.info(
