@@ -31,6 +31,7 @@ def fetch_outfit_inspiration(
     if not settings.pexels_api_key or not items:
         return []
     query = _query_for(items, occasion, profile)
+    logger.info("outfit_inspiration_request query=%r per_page=4 orientation=portrait", query)
     try:
         response = httpx.get(
             f"{settings.pexels_base_url}/search",
@@ -38,9 +39,15 @@ def fetch_outfit_inspiration(
             headers={"Authorization": settings.pexels_api_key},
             timeout=settings.pexels_request_timeout_seconds,
         )
-        response.raise_for_status()
+        if response.is_error:
+            logger.warning(
+                "outfit_inspiration_response_failed status=%s body=%s",
+                response.status_code,
+                response.text[:800].replace("\n", " "),
+            )
+            response.raise_for_status()
         photos = response.json().get("photos", [])
-        return [
+        results = [
             {
                 "id": photo.get("id"),
                 "url": photo.get("url"),
@@ -51,6 +58,14 @@ def fetch_outfit_inspiration(
             for photo in photos
             if (photo.get("src") or {}).get("large") or (photo.get("src") or {}).get("medium")
         ]
+        logger.info(
+            "outfit_inspiration_response_ok status=%s photos=%s usable=%s",
+            response.status_code, len(photos), len(results),
+        )
+        return results
     except Exception as exc:
-        logger.warning("outfit_inspiration_failed query=%r error_type=%s", query, type(exc).__name__)
+        logger.warning(
+            "outfit_inspiration_failed query=%r error_type=%s",
+            query, type(exc).__name__,
+        )
         return []
