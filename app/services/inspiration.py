@@ -115,7 +115,7 @@ def fetch_outfit_inspiration(
     query = _query_for(items, occasion, profile)
     request_payload = {
         "query": query,
-        "per_page": 4,
+        "per_page": settings.pexels_results_per_request,
         "orientation": "portrait",
     }
     logger.info(
@@ -125,7 +125,11 @@ def fetch_outfit_inspiration(
     try:
         response = httpx.get(
             f"{settings.pexels_base_url}/search",
-            params={"query": query, "per_page": 4, "orientation": "portrait"},
+            params={
+                "query": query,
+                "per_page": settings.pexels_results_per_request,
+                "orientation": "portrait",
+            },
             headers={"Authorization": settings.pexels_api_key},
             timeout=settings.pexels_request_timeout_seconds,
         )
@@ -184,7 +188,10 @@ def fetch_outfit_inspiration(
             )
             if accepted:
                 results.append((score, result))
-        results = [result for _, result in sorted(results, key=lambda pair: pair[0], reverse=True)[:2]]
+        # Return every accepted candidate from this one Pexels request. The
+        # metadata/CLIP gates decide quality; there is no arbitrary two-image
+        # truncation after scoring.
+        results = [result for _, result in sorted(results, key=lambda pair: pair[0], reverse=True)]
         logger.info(
             "outfit_inspiration_response_ok status=%s photos=%s usable=%s",
             response.status_code, len(photos), len(results),

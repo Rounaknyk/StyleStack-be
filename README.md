@@ -261,14 +261,17 @@ OPENWEATHER_BASE_URL=https://api.openweathermap.org/data/2.5
 PEXELS_API_KEY=your-pexels-api-key
 PEXELS_BASE_URL=https://api.pexels.com/v1
 PEXELS_REQUEST_TIMEOUT_SECONDS=8
+PEXELS_RESULTS_PER_REQUEST=10
 INSPIRATION_CLIP_ENABLED=false
 INSPIRATION_CLIP_MODEL=openai/clip-vit-base-patch32
 INSPIRATION_CLIP_THRESHOLD=0.28
 INSPIRATION_CLIP_REQUEST_TIMEOUT_SECONDS=12
 ```
 
-When configured, outfit suggestions also include up to two optional Pexels
-style references. They are searched from the suggested wardrobe categories,
+When configured, outfit suggestions make one Pexels search request per outfit
+with up to ten candidates, then return every candidate that passes the quality
+gates. There is no arbitrary limit on accepted references. They are searched
+from the suggested wardrobe categories,
 colors, occasion, and ethnic/western style context. Inspiration failures never
 block outfit generation. Keep the Pexels key server-side and rotate any key
 that has been pasted into chat, source control, or logs.
