@@ -1,4 +1,5 @@
 import logging
+import json
 from typing import Any
 
 import httpx
@@ -28,10 +29,22 @@ def fetch_outfit_inspiration(
 ) -> list[dict[str, Any]]:
     """Fetch optional visual references; never make outfit generation fail."""
     settings = get_settings()
-    if not settings.pexels_api_key or not items:
+    if not settings.pexels_api_key:
+        logger.warning("outfit_inspiration_skipped reason=PEXELS_API_KEY_missing")
+        return []
+    if not items:
+        logger.info("outfit_inspiration_skipped reason=no_selected_items")
         return []
     query = _query_for(items, occasion, profile)
-    logger.info("outfit_inspiration_request query=%r per_page=4 orientation=portrait", query)
+    request_payload = {
+        "query": query,
+        "per_page": 4,
+        "orientation": "portrait",
+    }
+    logger.info(
+        "outfit_inspiration_request_payload=%s",
+        json.dumps(request_payload, ensure_ascii=False),
+    )
     try:
         response = httpx.get(
             f"{settings.pexels_base_url}/search",
@@ -43,7 +56,7 @@ def fetch_outfit_inspiration(
             logger.warning(
                 "outfit_inspiration_response_failed status=%s body=%s",
                 response.status_code,
-                response.text[:800].replace("\n", " "),
+                response.text[:2000].replace("\n", " "),
             )
             response.raise_for_status()
         photos = response.json().get("photos", [])
@@ -51,17 +64,26 @@ def fetch_outfit_inspiration(
             {
                 "id": photo.get("id"),
                 "url": photo.get("url"),
-                "image_url": (photo.get("src") or {}).get("large") or (photo.get("src") or {}).get("medium"),
+                "image_url": (photo.get("src") or {}).get("original")
+                or (photo.get("src") or {}).get("large")
+                or (photo.get("src") or {}).get("medium"),
                 "alt": photo.get("alt") or "Style inspiration",
                 "photographer": photo.get("photographer") or "Pexels creator",
             }
             for photo in photos
-            if (photo.get("src") or {}).get("large") or (photo.get("src") or {}).get("medium")
+            if (photo.get("src") or {}).get("original")
+            or (photo.get("src") or {}).get("large")
+            or (photo.get("src") or {}).get("medium")
         ]
         logger.info(
             "outfit_inspiration_response_ok status=%s photos=%s usable=%s",
             response.status_code, len(photos), len(results),
         )
+        for result in results:
+            logger.info(
+                "outfit_inspiration_image id=%s image_url=%s photographer=%s",
+                result.get("id"), result.get("image_url"), result.get("photographer"),
+            )
         return results
     except Exception as exc:
         logger.warning(
