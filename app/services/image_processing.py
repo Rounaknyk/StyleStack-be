@@ -6,6 +6,7 @@ from PIL import Image, ImageOps
 
 from app.core.config import get_settings
 from app.services.fashion_segmentation import (
+    GENERIC_ACCESSORY_CATEGORIES,
     isolate_garment_on_transparent,
     isolate_garment_on_white,
 )
@@ -24,7 +25,9 @@ def _background_session():
 def put_item_on_white_background(contents: bytes, category: str | None = None) -> bytes:
     """Remove the background without cropping or resizing the source canvas."""
     settings = get_settings()
-    if settings.fashion_segmentation_enabled and category:
+    category_key = (category or "").strip().casefold()
+    use_semantic_mask = category_key not in GENERIC_ACCESSORY_CATEGORIES
+    if settings.fashion_segmentation_enabled and category and use_semantic_mask:
         try:
             fashion_result = isolate_garment_on_white(contents, category)
             if fashion_result:
@@ -90,7 +93,9 @@ def put_item_on_transparent_background(
 ) -> bytes:
     """Remove the background while preserving the complete source canvas as PNG."""
     settings = get_settings()
-    if settings.fashion_segmentation_enabled and category:
+    category_key = (category or "").strip().casefold()
+    use_semantic_mask = category_key not in GENERIC_ACCESSORY_CATEGORIES
+    if settings.fashion_segmentation_enabled and category and use_semantic_mask:
         try:
             fashion_result = isolate_garment_on_transparent(contents, category)
             if fashion_result:

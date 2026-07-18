@@ -26,8 +26,21 @@ CATEGORY_LABELS: dict[str, set[int]] = {
     "dhoti": {6}, "dhotis": {6}, "ethnic_set": {4, 5, 6},
     "skirt": {5}, "skirts": {5}, "pants": {6}, "trousers": {6},
     "jeans": {6}, "shoe": {9, 10}, "shoes": {9, 10},
+    "footwear": {9, 10}, "sneaker": {9, 10}, "sneakers": {9, 10},
+    "boot": {9, 10}, "boots": {9, 10}, "sandal": {9, 10},
+    "sandals": {9, 10}, "slipper": {9, 10}, "slippers": {9, 10},
+    "loafer": {9, 10}, "loafers": {9, 10},
     "accessory": {1, 3, 8, 16, 17}, "accessories": {1, 3, 8, 16, 17},
     "bag": {16}, "bags": {16}, "scarf": {17}, "belt": {8}, "hat": {1},
+    "cap": {1}, "caps": {1}, "sunglasses": {3}, "tie": {17},
+}
+# These small/worn accessories do not have a dedicated clothes-model class.
+# They bypass the semantic mask so a watch or ring is not mistaken for a
+# sleeve, arm, or another nearby garment.
+GENERIC_ACCESSORY_CATEGORIES = {
+    "watch", "watches", "jewelry", "jewellery", "necklace", "necklaces",
+    "bracelet", "bracelets", "ring", "rings", "earring", "earrings",
+    "wallet", "wallets", "sock", "socks", "brooch", "cufflink", "cufflinks",
 }
 PERSON_LABELS = {2, 11, 12, 13, 14, 15}
 

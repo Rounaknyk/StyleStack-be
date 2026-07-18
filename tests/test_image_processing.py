@@ -9,6 +9,7 @@ from app.services.image_processing import (
     optimize_item_image,
     put_item_on_white_background,
 )
+from app.services.fashion_segmentation import CATEGORY_LABELS
 
 
 def _jpeg(size: tuple[int, int] = (180, 120)) -> bytes:
@@ -19,6 +20,26 @@ def _jpeg(size: tuple[int, int] = (180, 120)) -> bytes:
 
 
 class ImageProcessingTests(unittest.TestCase):
+    def test_footwear_aliases_use_shoe_segmentation_labels(self) -> None:
+        self.assertEqual(CATEGORY_LABELS["sneakers"], {9, 10})
+        self.assertEqual(CATEGORY_LABELS["footwear"], {9, 10})
+
+    def test_small_accessories_bypass_clothes_segmentation(self) -> None:
+        isolated = Image.new("RGBA", (180, 120), (0, 0, 0, 0))
+        for x in range(60, 120):
+            for y in range(35, 85):
+                isolated.putpixel((x, y), (20, 40, 130, 255))
+        with (
+            patch(
+                "app.services.image_processing.isolate_garment_on_transparent",
+                side_effect=AssertionError("semantic segmentation should be skipped"),
+            ),
+            patch("rembg.remove", return_value=isolated),
+            patch("app.services.image_processing._background_session"),
+        ):
+            result = put_item_on_white_background(_jpeg(), "watch")
+        self.assertTrue(result)
+
     def test_optimization_preserves_aspect_ratio_and_limits_largest_side(self) -> None:
         result = optimize_item_image(_jpeg((3000, 1500)), max_dimension=1000)
         rendered = Image.open(BytesIO(result))
