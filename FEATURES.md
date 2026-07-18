@@ -206,7 +206,10 @@ updates the AI columns, and finishes as `completed` or `failed`.
 GET /api/v1/wardrobe/items/{item_id}/tag-status
 ```
 
-Failures are retried up to three times and logged without blocking the upload.
+In normal mode, failures are retried up to three times and logged without
+blocking the upload. In the current free pilot mode, tagging uses one attempt
+per item to avoid multiplying provider usage; a failed item remains editable
+and can be retried later.
 The queue is intentionally process-local for MVP: jobs are lost on process
 restart and multiple server workers have independent queues. A durable queue is
 required before production scaling.
@@ -641,7 +644,7 @@ sequenceDiagram
     Worker->>Worker: segmentation/rembg + optimize + thumbnail + cutout
     Worker->>Store: upload processed assets
     Worker->>Store: create short-lived signed URL
-    Worker->>AI: up to 3 attempts, provider fallback
+    Worker->>AI: 1 pilot attempt (up to 3 in full mode), provider fallback
     AI-->>Worker: validated JSON tags
     Worker->>DB: save AI fields and status=completed
 ```
@@ -660,7 +663,8 @@ The MVP already has useful safeguards:
 - CLIP is disabled by default to avoid its large model download.
 - Vision requests have a 30-second timeout.
 - The background queue is bounded at 1,000 and rejects immediately when full.
-- AI tagging retries are limited to three attempts with exponential backoff.
+- In free pilot mode, AI tagging uses one attempt; full mode allows three
+  attempts with exponential backoff.
 - Incoming image objects are removed after processed assets are ready.
 - Signed image URLs are short-lived rather than permanently public.
 - Gmail uses merchant/order identifiers for duplicate prevention and does not
@@ -669,6 +673,19 @@ The MVP already has useful safeguards:
 
 These controls do not replace authentication-aware rate limiting, quotas, or
 provider usage accounting. Those are required before public launch.
+
+### Current free-pilot behavior
+
+`FREE_PILOT_MODE=true` is the default while validating the product. It also:
+
+- caps preview/detection AI calls at three per user and operation per day;
+- caps Gmail scans at ten messages per request;
+- caches identical Pexels queries for 24 hours in the API process;
+- keeps one image worker and avoids CLIP model downloads.
+
+These limits are intentionally process-local. They protect a single free
+instance from bursts but reset after a restart and do not coordinate multiple
+replicas. They are suitable for a pilot, not a paid production deployment.
 
 ## 20. Recommended scale-up plan
 
@@ -711,7 +728,59 @@ Dashboards should track AI fallback rate, upload-to-tag p50/p95 latency, queue
 depth, CPU/RAM time, Pexels acceptance/empty-result rate, Gmail imported versus
 skipped messages, notification delivery, and cost per active user.
 
-## 21. Feature readiness definitions
+## 21. Highest-value optimizations before spending money
+
+These changes improve speed or reduce provider calls without adding another
+service:
+
+1. **Reuse today's outfit.** Before calling Groq, look for an existing outfit
+   for the same user, local date, occasion, and unchanged wardrobe version.
+   This prevents app restarts or refreshes from generating duplicate looks.
+2. **Paginate wardrobe reads.** The Wardrobe tab should request 30–50 items at a
+   time and load more on scroll. Today’s recommendation can continue reading
+   compact metadata server-side without downloading every image to the phone.
+3. **Cache weather briefly.** Cache a city's weather response for 10–15 minutes
+   so event and daily generation do not make duplicate weather requests.
+4. **Add a provider circuit breaker.** After repeated Groq/Gemini failures,
+   temporarily skip new AI calls and show a manual retry state instead of
+   waiting through repeated timeouts.
+5. **Track lightweight timing metrics.** Log request ID, feature, provider,
+   queue wait, processing duration, bytes, retry count, and status—never image
+   contents or tokens. This identifies the real bottleneck before scaling.
+6. **Keep heavy work on one worker.** Do not add Gunicorn workers on a free
+   instance while local segmentation is enabled; each process can load its own
+   model copy and increase memory pressure.
+
+## 22. Small paid options worth considering
+
+The first paid improvement should be reliable scheduling, not Redis. Render's
+current pricing lists Cron Jobs from $1/month, while its managed Redis-compatible
+Key Value service has a free 25 MB tier and a $10/month Starter tier. The free
+tier is adequate for optional caching but has no persistence, so it is not a
+durable job queue. See [Render pricing](https://render.com/pricing) and
+[Render Key Value documentation](https://render.com/docs/key-value) for the
+current limits.
+
+Recommended order:
+
+1. **$0:** implement outfit reuse, pagination, weather caching, and a provider
+   circuit breaker.
+2. **About $1/month:** add one Render Cron job that calls a protected scheduler
+   endpoint for morning/event notifications. This removes dependence on the
+   API process being awake at the exact minute.
+3. **About $10/month when needed:** add Render Key Value for a shared queue,
+   distributed rate limits, and cross-instance cache. Do this only when the
+   API has multiple replicas or the in-process queue is demonstrably losing
+   work.
+4. **After that:** move image processing and AI tagging to a dedicated worker;
+   this improves reliability but is a larger compute decision, not a cache
+   purchase.
+
+At 1,000 users, Redis is not automatically necessary. A single API instance,
+Supabase persistence, bounded provider calls, and the free-pilot controls are
+the lowest-risk starting point.
+
+## 23. Feature readiness definitions
 
 - **MVP-ready:** works in one process, failures are visible, and manual
   recovery exists.
@@ -727,7 +796,7 @@ not scale-ready. Outfit generation and calendar sync have growth-friendly data
 models, but their synchronous external calls and process-local scheduling still
 need hardening.
 
-## 22. Quick end-to-end example
+## 24. Quick end-to-end example
 
 ```text
 1. User signs in with Firebase.
