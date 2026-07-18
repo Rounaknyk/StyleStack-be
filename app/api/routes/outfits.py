@@ -6,11 +6,19 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.core.supabase import get_supabase_client
 from app.dependencies.auth import CurrentUser
+from pydantic import BaseModel, Field
+
 from app.models.outfit import OutfitResponse, OutfitSuggestionRequest, OutfitWearResponse
 from app.services.outfits import create_outfit_suggestion, get_outfit
+from app.services.occasion import today_occasion
 
 router = APIRouter()
 logger = logging.getLogger("stylestack.outfits")
+
+
+class OutfitChatRequest(BaseModel):
+    message: str = Field(min_length=3, max_length=500)
+    city: str | None = Field(default=None, min_length=2, max_length=120)
 
 
 @router.post("/suggest", response_model=OutfitResponse, status_code=201)
@@ -30,8 +38,11 @@ def suggest_outfit(payload: OutfitSuggestionRequest, current_user: CurrentUser):
         city = profile[0].get("city") if profile else None
     if not city:
         raise HTTPException(status_code=422, detail="Set a city before requesting an outfit")
+    occasion = payload.occasion
+    if occasion.strip().lower() in {"daily", "today"}:
+        occasion = today_occasion() or "casual everyday look"
     try:
-        outfit = create_outfit_suggestion(current_user["uid"], city, payload.occasion)
+        outfit = create_outfit_suggestion(current_user["uid"], city, occasion)
         if payload.calendar_event_id:
             client.table("calendar_events").update(
                 {"outfit_id": str(outfit["id"])}
@@ -54,6 +65,31 @@ def suggest_outfit(payload: OutfitSuggestionRequest, current_user: CurrentUser):
             type(exc).__name__,
         )
         raise HTTPException(status_code=502, detail="Could not generate an outfit") from exc
+
+
+@router.post("/chat", response_model=OutfitResponse, status_code=201)
+def stylist_chat(payload: OutfitChatRequest, current_user: CurrentUser):
+    """Turn a natural-language event request into the same saved outfit flow."""
+    client = get_supabase_client()
+    city = payload.city
+    if not city:
+        profile = client.table("profiles").select("city").eq(
+            "firebase_uid", current_user["uid"]
+        ).limit(1).execute().data
+        city = profile[0].get("city") if profile else None
+    if not city:
+        raise HTTPException(status_code=422, detail="Set a city before asking your stylist")
+    occasion = f"Stylist chat: {payload.message.strip()}"[:180]
+    try:
+        return create_outfit_suggestion(current_user["uid"], city, occasion)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception(
+            "stylist_chat_failed uid=%s error_type=%s",
+            current_user["uid"], type(exc).__name__,
+        )
+        raise HTTPException(status_code=502, detail="Could not prepare your stylist answer") from exc
 
 
 @router.get("/{outfit_id}", response_model=OutfitResponse)
