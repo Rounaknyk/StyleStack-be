@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timedelta, timezone
-from threading import Event, Thread
+from threading import Event, Thread, Timer
 from zoneinfo import ZoneInfo
 
 from firebase_admin import messaging
@@ -148,6 +148,30 @@ class NotificationScheduler:
         ).eq("firebase_uid", profile["firebase_uid"]).execute()
         logger.info("daily_outfit_notification_sent uid=%s", profile["firebase_uid"])
         return str(outfit["id"])
+
+    def schedule_daily_outfit_test(
+        self, client, profile: dict, delay_seconds: int = 10
+    ) -> None:
+        """Run the production daily notification path after a short test delay."""
+
+        def deliver() -> None:
+            try:
+                now = datetime.now(ZoneInfo(profile.get("timezone") or "UTC"))
+                self.process_daily_outfit(client, profile, now)
+                logger.info(
+                    "daily_outfit_delayed_test_sent uid=%s delay_seconds=%s",
+                    profile["firebase_uid"],
+                    delay_seconds,
+                )
+            except Exception:
+                logger.exception(
+                    "daily_outfit_delayed_test_failed uid=%s",
+                    profile.get("firebase_uid"),
+                )
+
+        timer = Timer(delay_seconds, deliver)
+        timer.daemon = True
+        timer.start()
 
     def process_event_reminders(
         self, client, profile: dict, now: datetime, *, force: bool = False

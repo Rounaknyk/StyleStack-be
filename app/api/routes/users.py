@@ -236,6 +236,18 @@ def simulate_daily_outfit(current_user: CurrentUser) -> SimulationResponse:
     )
 
 
+@router.post("/me/simulations/daily-outfit-delay", response_model=SimulationResponse)
+def simulate_delayed_daily_outfit(current_user: CurrentUser) -> SimulationResponse:
+    """Schedule the same daily notification flow ten seconds from now."""
+    client, profile, _ = _simulation_profile(current_user["uid"])
+    notification_scheduler.schedule_daily_outfit_test(client, profile, 10)
+    return SimulationResponse(
+        kind="daily_outfit_delayed",
+        notifications_sent=0,
+        detail="The production 8 AM outfit flow is scheduled for 10 seconds from now.",
+    )
+
+
 @router.post("/me/simulations/tomorrow-events", response_model=SimulationResponse)
 def simulate_tomorrow_events(current_user: CurrentUser) -> SimulationResponse:
     """Run the same tomorrow-event delivery function used by the scheduler."""
