@@ -536,7 +536,198 @@ constraints:
 6. A local physical-device build must use the computer's LAN API URL; Android
    emulator builds can use `10.0.2.2` for a backend on the host machine.
 
-## 16. Quick end-to-end example
+## 16. Scalability and cost scorecard
+
+“Works” and “scales” are different properties. The current MVP is a single
+FastAPI process with Supabase doing persistence and several external APIs doing
+AI, weather, calendar, Gmail, inspiration, and push delivery.
+
+| Feature | Current status | Main bottleneck | Production direction |
+| --- | --- | --- | --- |
+| Firebase auth | Good | Firebase quotas and token verification latency | Keep; add rate limits and observability |
+| Wardrobe CRUD | Near scale-ready | Unbounded queries and signed-URL work | Enforce pagination, indexes, caching, and rate limits |
+| Image processing | Not scale-ready | CPU/RAM-heavy local models in API workers | Dedicated image-worker queue and autoscaling |
+| AI tagging | Not scale-ready | One in-process worker; provider quotas | Durable jobs, backoff, idempotency, provider budgets |
+| Outfit generation | Partially ready | Synchronous AI + weather + Pexels calls | Cache by user/date/context and generate asynchronously |
+| Outfit selfies | Partially ready | Synchronous vision and large wardrobe prompt | Compress, cap candidates, queue longer analysis |
+| Gmail sync | Not scale-ready | Message pagination, image downloads, AI calls | Background jobs, checkpoints, per-order dedupe |
+| Google Calendar | Partially ready | Token refresh and repeated window sync | Incremental sync tokens and scheduled worker |
+| Notifications | Not scale-ready | Process-local minute poller | One durable scheduler and FCM fanout worker |
+| Pexels inspiration | Partially ready | One external request per outfit | Cache normalized queries and enforce budgets |
+| Canvas styles | Near scale-ready | Preview size and signed URLs | Resize previews and add CDN/URL caching |
+
+The database CRUD and ownership model are the strongest scaling foundations.
+AI, image processing, Gmail, notifications, and inspiration are MVP features,
+not production-scale workflows yet.
+
+## 17. Exact AI and model inventory
+
+### Vision tagging and outfit selfies
+
+The primary provider is Groq's OpenAI-compatible chat endpoint using
+`GROQ_VISION_MODEL` (currently `qwen/qwen3.6-27b`). The request contains a
+compressed image and a JSON-only prompt. When Groq fails and
+`GEMINI_API_KEY` is configured, Gemini is attempted using
+`GEMINI_VISION_MODEL` (currently `gemini-flash-latest`). Gemini is a remote API,
+not a model running on the server.
+
+The prompts live in `app/services/ai_tagging.py`:
+
+- `TAGGING_PROMPT`: one garment, category/color/season/formality, description,
+  up to five useful tags, and stable visual traits.
+- `MULTI_ITEM_PROMPT`: up to twelve visible wardrobe items in one photo,
+  including Indian garments and accessories.
+- Outfit-selfie prompt: quality assessment plus conservative matching to the
+  user's wardrobe candidates and confidence values.
+
+For a normal upload without complete AI preview fields, the background worker
+can perform up to three tagging attempts. Each attempt can call Groq and then
+Gemini if Groq fails, so provider calls can be much higher than one per image
+during an outage or rate limit. If complete AI preview fields are supplied by
+the form, the provider tagging call is skipped.
+
+### Image segmentation and background removal
+
+These are local CPU models, not paid vision API calls:
+
+1. Fashion-aware segmentation uses a quantized ONNX `segformer_b2_clothes`
+   model downloaded once per server machine from Hugging Face and cached under
+   `~/.stylestack/models/segformer_b2_clothes_quantized.onnx`.
+2. Semantic labels select the requested garment category and remove person
+   labels. Indian categories map to the closest segmentation classes while the
+   vision tagger retains the precise Indian category.
+3. If the semantic mask is unreliable, `rembg` uses the configured
+   `BACKGROUND_REMOVAL_MODEL` (currently `birefnet-general-lite`) with CPU
+   alpha matting.
+
+Both model sessions are lazy and cached per process. Four Gunicorn workers can
+therefore initialize four copies and compete for CPU/RAM. This is a major
+reason this work belongs in a dedicated worker service before horizontal
+scaling.
+
+### Inspiration relevance
+
+Pexels is not an AI classifier. One request returns up to
+`PEXELS_RESULTS_PER_REQUEST` photos (currently 10). By default, cheap metadata
+rules check human/fashion language, category coverage, color coverage, and
+reject terms such as `logo`, `catalog`, `mockup`, and `product`. Every passing
+photo may be returned; there is no forced two-image limit in the backend.
+
+Optional local CLIP scoring is controlled by `INSPIRATION_CLIP_ENABLED` and is
+false by default. If enabled, the server lazily downloads
+`openai/clip-vit-base-patch32` (roughly 600 MB plus runtime memory) and computes
+image/text cosine similarity locally. The threshold is a raw cosine value, not
+a calibrated accuracy percentage. CLIP is therefore an optional quality gate,
+not a guaranteed fashion judge, and is usually unsuitable for a small Render
+instance.
+
+## 18. Complete wardrobe-upload cost path
+
+```mermaid
+sequenceDiagram
+    participant App as Flutter
+    participant API as FastAPI request
+    participant Store as Supabase Storage
+    participant DB as Supabase DB
+    participant Worker as One local worker thread
+    participant AI as Groq then Gemini fallback
+    App->>API: multipart image + editable fields
+    API->>Store: upload UID/incoming/random.ext
+    API->>DB: insert ai_tag_status=pending
+    API-->>App: item immediately
+    API->>Worker: enqueue item_id (non-blocking)
+    Worker->>DB: status=processing
+    Worker->>Store: download original
+    Worker->>Worker: segmentation/rembg + optimize + thumbnail + cutout
+    Worker->>Store: upload processed assets
+    Worker->>Store: create short-lived signed URL
+    Worker->>AI: up to 3 attempts, provider fallback
+    AI-->>Worker: validated JSON tags
+    Worker->>DB: save AI fields and status=completed
+```
+
+The upload response is fast because it stops after Storage and the initial DB
+insert. The expensive work still consumes queue capacity, CPU time, Storage
+bandwidth, and usually one or more vision-provider requests.
+
+## 19. Existing cost and latency controls
+
+The MVP already has useful safeguards:
+
+- Vision images are resized to at most 1280px for selfie analysis.
+- AI previews are capped at 4 MB; stored uploads are capped at 10 MB.
+- Pexels has an 8-second timeout and one request per outfit.
+- CLIP is disabled by default to avoid its large model download.
+- Vision requests have a 30-second timeout.
+- The background queue is bounded at 1,000 and rejects immediately when full.
+- AI tagging retries are limited to three attempts with exponential backoff.
+- Incoming image objects are removed after processed assets are ready.
+- Signed image URLs are short-lived rather than permanently public.
+- Gmail uses merchant/order identifiers for duplicate prevention and does not
+  persist raw email HTML or temporary image bytes.
+- Notification records use dedupe keys and per-profile date tracking.
+
+These controls do not replace authentication-aware rate limiting, quotas, or
+provider usage accounting. Those are required before public launch.
+
+## 20. Recommended scale-up plan
+
+### Before adding multiple API replicas
+
+1. Replace `BackgroundJobQueue` with Redis + RQ/Celery/Arq or a managed queue.
+2. Run image processing and AI tagging in a worker deployment with explicit
+   CPU/RAM limits.
+3. Add a job table with `queued`, `processing`, `completed`, and `failed`
+   states, attempts, timestamps, and last error.
+4. Add idempotency keys to upload/import requests.
+5. Run only one notification scheduler, or move it to durable cron/worker;
+   the current poller must not run independently in every web replica.
+6. Add per-user daily limits for uploads, AI analyses, Gmail sync, and Pexels.
+
+### Lower cost without reducing quality
+
+1. Validate type, dimensions, blur, and duplicate image hash locally before a
+   vision call.
+2. Reuse complete user-confirmed AI preview fields instead of re-tagging.
+3. Cache tags by perceptual image hash for repeated uploads.
+4. Cache weather and outfit suggestions by user/date/occasion/wardrobe version.
+5. Cache Pexels responses by normalized query and return the best accepted
+   references rather than repeatedly searching the same look.
+6. Keep thumbnails/cutouts immutable and serve them through a CDN or signed-URL
+   cache.
+7. Prefer one multi-item vision request over one provider request per garment.
+
+### Measure quality and spend
+
+Record these safe, non-secret fields per request/job:
+
+```text
+request_id, uid_hash, feature, provider, model, attempt,
+queue_wait_ms, processing_ms, input_bytes, output_bytes,
+status, provider_status_code, retry_count, estimated_cost
+```
+
+Dashboards should track AI fallback rate, upload-to-tag p50/p95 latency, queue
+depth, CPU/RAM time, Pexels acceptance/empty-result rate, Gmail imported versus
+skipped messages, notification delivery, and cost per active user.
+
+## 21. Feature readiness definitions
+
+- **MVP-ready:** works in one process, failures are visible, and manual
+  recovery exists.
+- **Scale-ready:** safe across restarts and replicas, idempotent, rate-limited,
+  observable, and has bounded cost.
+- **Quality-ready:** measured on representative images with known false-positive
+  and false-negative rates, not just a successful demo.
+
+Using those definitions, Firebase ownership, Supabase persistence, signed URLs,
+wardrobe CRUD, and canvas CRUD are closest to scale-ready. AI tagging,
+segmentation, Gmail import, notifications, and inspiration are MVP-ready but
+not scale-ready. Outfit generation and calendar sync have growth-friendly data
+models, but their synchronous external calls and process-local scheduling still
+need hardening.
+
+## 22. Quick end-to-end example
 
 ```text
 1. User signs in with Firebase.
@@ -552,4 +743,3 @@ constraints:
     interview-appropriate event look.
 11. The user can log the look by selfie, save it on the canvas, or mark it worn.
 ```
-
