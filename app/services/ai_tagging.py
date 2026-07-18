@@ -66,12 +66,13 @@ def _log_provider_failure(provider: str, exc: Exception) -> None:
 
 TAGGING_PROMPT = """Analyze the primary clothing item in this image and return ONLY valid JSON with these fields:
 {
+  "brand": "clearly visible brand name (for example, a readable logo or wordmark) or null",
   "category": "shirt|pants|dress|jacket|shoes|accessory|kurta|saree|lehenga|sherwani|salwar|dhoti|dupatta|blouse|anarkali|ethnic_set|other",
   "color": "black|white|red|blue|green|yellow|purple|pink|brown|grey|orange|beige|multicolor",
   "season": "summer|winter|spring|autumn|all",
   "formality": "formal|semi-formal|casual|sporty",
-  "description": "brief description of the item",
-  "tags": ["up to 5 concise useful style or material tags"],
+  "description": "brief specific description; include the brand when brand is not null",
+  "tags": ["up to 5 concise useful style, material, or brand tags; include the brand when known"],
   "visual_tags": ["up to 10 stable visual traits such as pattern, material, silhouette, neckline, sleeve and length"]
 }"""
 
@@ -82,12 +83,13 @@ Return ONLY valid JSON in this exact shape:
 {
   "items": [
     {
+      "brand": "clearly visible brand name or null",
       "category": "shirt|pants|dress|jacket|shoes|accessory|kurta|saree|lehenga|sherwani|salwar|dhoti|dupatta|blouse|anarkali|ethnic_set|other",
       "color": "black|white|red|blue|green|yellow|purple|pink|brown|grey|orange|beige|multicolor",
       "season": "summer|winter|spring|autumn|all",
       "formality": "formal|semi-formal|casual|sporty",
-      "description": "brief specific description",
-      "tags": ["up to 5 concise useful style or material tags"],
+      "description": "brief specific description; include brand when known",
+      "tags": ["up to 5 concise useful style, material, or brand tags"],
       "visual_tags": ["up to 10 stable visual traits"]
     }
   ]

@@ -67,8 +67,9 @@ async def analyze_image_preview(
     try:
         tags = analyze_clothing_bytes(contents, content_type)
         logger.info(
-            "image_preview_analyzed uid=%s category=%s",
+            "image_preview_analyzed uid=%s brand=%s category=%s",
             current_user["uid"],
+            tags.brand,
             tags.category,
         )
         return tags

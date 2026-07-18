@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class ClothingTags(BaseModel):
+    brand: str | None = Field(default=None, max_length=100)
     category: Literal[
         "shirt", "pants", "dress", "jacket", "shoes", "accessory",
         "kurta", "saree", "lehenga", "sherwani", "salwar", "dhoti",
