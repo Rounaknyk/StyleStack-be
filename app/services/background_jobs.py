@@ -10,6 +10,7 @@ import httpx
 from app.core.config import get_settings
 from app.core.supabase import get_supabase_client
 from app.services.ai_tagging import analyze_clothing_image
+from app.services.pilot_limits import consume_ai_slot
 from app.services.image_processing import (
     create_item_thumbnail,
     optimize_item_image,
@@ -24,6 +25,7 @@ logger = logging.getLogger("stylestack.jobs")
 class ImageTaggingJob:
     item_id: str
     image_path: str
+    owner_uid: str = ""
     category: str | None = None
     skip_ai: bool = False
     generate_name: bool = False
@@ -194,8 +196,13 @@ class BackgroundJobQueue:
                 raise RuntimeError("Supabase did not return a signed image URL")
 
             tags = None
+            settings = get_settings()
+            if settings.free_pilot_mode and not consume_ai_slot(job.owner_uid, "background_tagging"):
+                logger.warning("image_tagging_skipped reason=free_pilot_limit item_id=%s", job.item_id)
+                raise RuntimeError("Free pilot AI limit reached")
             last_error: Exception | None = None
-            for attempt in range(1, 4):
+            max_attempts = 1 if settings.free_pilot_mode else 3
+            for attempt in range(1, max_attempts + 1):
                 try:
                     tags = analyze_clothing_image(image_url)
                     break
@@ -213,11 +220,11 @@ class BackgroundJobQueue:
                         type(exc).__name__,
                         status_code,
                     )
-                    if attempt < 3:
+                    if attempt < max_attempts:
                         time.sleep(2 ** (attempt - 1))
 
             if tags is None:
-                raise RuntimeError("AI tagging failed after 3 attempts") from last_error
+                raise RuntimeError(f"AI tagging failed after {max_attempts} attempt(s)") from last_error
 
             completed_update = {
                 **base_update,

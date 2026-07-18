@@ -351,6 +351,39 @@ The scheduler is process-local for MVP development. Set `NOTIFICATION_SCHEDULER_
 
 ## 4. Deploy to Render
 
+### Free pilot mode (recommended while validating the product)
+
+The backend defaults to `FREE_PILOT_MODE=true`. This is designed for a small
+indie pilot and does not require Redis, a paid background worker, CLIP, or a
+second Render service:
+
+- image tagging gets one provider attempt instead of three retries;
+- preview/detection calls are limited to three per user and operation per day;
+- Gmail sync is capped at ten messages per request;
+- repeated identical Pexels outfit requests are served from a 24-hour process
+  cache, so only the first request uses the API;
+- uploads still return immediately while the existing single worker processes
+  images in the background.
+
+These guardrails are process-local, so they protect a free single-instance
+pilot but are not a distributed quota system. Jobs can still be lost if the
+API process restarts. When usage or reliability requirements justify paid
+infrastructure, set `FREE_PILOT_MODE=false` and move the worker/limits to a
+durable queue and shared limiter.
+
+The limits can be tuned without code changes:
+
+```env
+FREE_PILOT_MODE=true
+FREE_PILOT_AI_DAILY_LIMIT=3
+FREE_PILOT_GMAIL_MAX_MESSAGES=10
+FREE_PILOT_INSPIRATION_CACHE_SECONDS=86400
+```
+
+This mode reduces avoidable provider calls and CPU bursts; it cannot guarantee
+zero charges from third-party AI/API providers if their keys are enabled, so
+keep provider quotas and billing alerts enabled in those consoles.
+
 The repository includes `render.yaml`, so it can be deployed as a Render Blueprint:
 
 1. Push this directory to a Git repository.

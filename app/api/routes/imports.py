@@ -6,6 +6,7 @@ from app.core.supabase import get_supabase_client
 from app.dependencies.auth import CurrentUser
 from app.models.imports import GmailImportRequest, GmailImportResponse
 from app.services.gmail_import import import_gmail_orders
+from app.services.pilot_limits import pilot_gmail_limit
 from app.services.wardrobe import ensure_profile
 
 router = APIRouter()
@@ -22,7 +23,7 @@ def sync_gmail_orders(payload: GmailImportRequest, current_user: CurrentUser) ->
             client,
             current_user["uid"],
             payload.access_token,
-            payload.max_messages,
+            pilot_gmail_limit(payload.max_messages),
         )
         logger.debug(
             "gmail_import_completed uid=%s scanned=%s imported=%s skipped=%s",

@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     google_oauth_client_secret: str | None = None
     google_calendar_auto_sync_enabled: bool = True
 
+    # Cost-control defaults for the free pilot. Set false when moving to a
+    # durable worker/paid provider; all existing full-fidelity behavior then
+    # remains available.
+    free_pilot_mode: bool = True
+    free_pilot_ai_daily_limit: int = 3
+    free_pilot_gmail_max_messages: int = 10
+    free_pilot_inspiration_cache_seconds: int = 86400
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

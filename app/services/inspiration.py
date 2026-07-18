@@ -1,6 +1,8 @@
 import logging
 import json
 import re
+import time
+from threading import Lock
 from typing import Any
 
 import httpx
@@ -9,6 +11,8 @@ from app.core.config import get_settings
 from app.services.clip_relevance import score_if_enabled
 
 logger = logging.getLogger("stylestack.inspiration")
+_cache_lock = Lock()
+_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
 _CATEGORY_TERMS = {
     "shirt": {"shirt", "top", "blouse", "button"}, "pants": {"pant", "trouser", "jean", "chino", "short"},
@@ -86,6 +90,13 @@ def fetch_outfit_inspiration(
         "outfit_inspiration_request_payload=%s",
         json.dumps(request_payload, ensure_ascii=False),
     )
+    cache_key = json.dumps(request_payload, sort_keys=True)
+    now = time.monotonic()
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+        if cached and cached[0] > now:
+            logger.info("outfit_inspiration_cache_hit")
+            return [dict(item) for item in cached[1]]
     try:
         response = httpx.get(
             f"{settings.pexels_base_url}/search",
@@ -121,6 +132,7 @@ def fetch_outfit_inspiration(
             or (photo.get("src") or {}).get("medium")):
                 continue
             clip_score = None
+            metadata_score = 0.0
             if settings.inspiration_clip_enabled:
                 try:
                     clip_score = score_if_enabled(result["image_url"], items, occasion)
@@ -145,6 +157,11 @@ def fetch_outfit_inspiration(
         # The active CLIP or metadata gate decides quality; there is no
         # arbitrary two-image truncation.
         results = [result for _, result in sorted(results, key=lambda pair: pair[0], reverse=True)]
+        with _cache_lock:
+            _cache[cache_key] = (
+                now + settings.free_pilot_inspiration_cache_seconds,
+                [dict(result) for result in results],
+            )
         logger.info(
             "outfit_inspiration_response_ok status=%s photos=%s usable=%s",
             response.status_code, len(photos), len(results),
