@@ -19,6 +19,7 @@ from app.models.onboarding import (
     OnboardingCompleteRequest,
     OnboardingProfileResponse,
 )
+from app.services.account_deletion import AccountDeletionError, delete_user_account
 from app.services.notifications import notification_scheduler
 from app.services.wardrobe import ensure_profile
 
@@ -88,6 +89,26 @@ class SimulationResponse(BaseModel):
 def read_current_user(current_user: CurrentUser) -> CurrentUserResponse:
     """Return the Firebase UID represented by the caller's ID token."""
     return CurrentUserResponse(user_id=current_user["uid"])
+
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+def delete_current_user(current_user: CurrentUser) -> None:
+    """Permanently delete all cloud data and authentication for the caller."""
+    try:
+        delete_user_account(get_supabase_client(), current_user["uid"])
+    except AccountDeletionError as exc:
+        logger.error(
+            "account_deletion_incomplete uid=%s stage=%s",
+            current_user["uid"],
+            exc.stage,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Account deletion could not be completed safely. "
+                "Your account remains available so you can try again."
+            ),
+        ) from exc
 
 
 @router.get("/me/onboarding", response_model=OnboardingProfileResponse)
