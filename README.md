@@ -281,6 +281,14 @@ products are rejected without making vision-AI calls. Thumbnail URLs are
 upgraded to their original-resolution catalog images before upload to private
 Supabase Storage. Email HTML and temporary image bytes are not persisted.
 
+The app starts a complete import with `POST /api/v1/imports/gmail/jobs` and
+polls `GET /api/v1/imports/gmail/jobs/{job_id}`. A single in-process worker
+paginates through every matching delivered email and skips order IDs already in
+the wardrobe before product extraction or AI enrichment. The short-lived Google
+token exists only in worker memory and is cleared when the job completes. This
+MVP queue survives app navigation but not a backend process restart; move it to
+a durable database queue before running multiple API instances.
+
 ### Weather-aware outfit API
 
 Set these values in `.env`:

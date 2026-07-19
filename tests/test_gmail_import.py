@@ -574,6 +574,51 @@ class GmailImportLoggingTests(unittest.TestCase):
         query = get.call_args_list[0].kwargs["q"]
         self.assertIn('subject:"Delivered:"', query)
 
+    def test_complete_import_paginates_every_delivered_search_page(self) -> None:
+        ignored_payload = {
+            "headers": [
+                {"name": "Subject", "value": "Shipped: Your Amazon order"},
+                {
+                    "name": "From",
+                    "value": '"Amazon.in" <shipment-tracking@amazon.in>',
+                },
+            ]
+        }
+        listed_pages: list[str | None] = []
+
+        def gmail_get(_http, path, _token, **params):
+            if path == "messages":
+                page_token = params.get("pageToken")
+                listed_pages.append(page_token)
+                if page_token is None:
+                    return {
+                        "messages": [{"id": "first"}],
+                        "nextPageToken": "page-2",
+                    }
+                return {"messages": [{"id": "second"}]}
+            if path in {"messages/first", "messages/second"}:
+                return {"id": path.rsplit("/", 1)[-1], "payload": ignored_payload}
+            raise AssertionError(f"Unexpected Gmail path: {path}")
+
+        progress: list[tuple[int, int, int]] = []
+        with patch(
+            "app.services.gmail_import._gmail_get",
+            side_effect=gmail_get,
+        ):
+            result = import_gmail_orders(
+                object(),
+                "uid",
+                "x" * 20,
+                limit=None,
+                on_progress=lambda scanned, imported, skipped: progress.append(
+                    (scanned, imported, skipped)
+                ),
+            )
+
+        self.assertEqual(result, (2, 0, 2))
+        self.assertEqual(listed_pages, [None, "page-2"])
+        self.assertEqual(progress[-1], (2, 0, 2))
+
 
 if __name__ == "__main__":
     unittest.main()

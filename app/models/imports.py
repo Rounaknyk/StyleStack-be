@@ -14,6 +14,15 @@ class GmailImportResponse(BaseModel):
     skipped_items: int
 
 
+class GmailImportJobResponse(BaseModel):
+    job_id: str
+    status: Literal["queued", "processing", "completed", "failed"]
+    scanned_messages: int = 0
+    imported_items: int = 0
+    skipped_items: int = 0
+    error: str | None = None
+
+
 class GmailProductAnalysis(BaseModel):
     is_fashion_item: bool
     name: str | None = Field(default=None, max_length=200)

@@ -6,7 +6,7 @@ from html.parser import HTMLParser
 from io import BytesIO
 import logging
 import re
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -1225,7 +1225,8 @@ def import_gmail_orders(
     client: Any,
     uid: str,
     access_token: str,
-    limit: int,
+    limit: int | None,
+    on_progress: Callable[[int, int, int], None] | None = None,
 ) -> tuple[int, int, int]:
     scanned = imported = skipped = 0
     processed_new = 0
@@ -1246,28 +1247,53 @@ def import_gmail_orders(
     except Exception:
         logger.warning("gmail_existing_orders_unavailable uid=%s", uid)
 
+    def report_progress() -> None:
+        if on_progress:
+            on_progress(scanned, imported, skipped)
+
     with httpx.Client(timeout=30) as http:
-        search_limit = min(50, max(limit, limit * 5))
-        listing = _gmail_get(
-            http,
-            "messages",
-            access_token,
-            q=AMAZON_DELIVERED_QUERY,
-            maxResults=search_limit,
-        )
-        message_refs = listing.get("messages", []) or []
+        page_token: str | None = None
+        page_number = 0
+        message_refs: list[dict[str, Any]] = []
+        while True:
+            if not message_refs:
+                if page_number > 0 and page_token is None:
+                    break
+                params: dict[str, Any] = {
+                    "q": AMAZON_DELIVERED_QUERY,
+                    "maxResults": 100,
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+                listing = _gmail_get(
+                    http,
+                    "messages",
+                    access_token,
+                    **params,
+                )
+                message_refs = list(listing.get("messages", []) or [])
+                next_token = listing.get("nextPageToken")
+                page_token = str(next_token) if next_token else None
+                page_number += 1
+                _log_block(
+                    "CLOSET SYNC — AMAZON DELIVERED EMAIL SEARCH",
+                    [
+                        ("Page", str(page_number)),
+                        ("Delivered matches on page", str(len(message_refs))),
+                        (
+                            "Import scope",
+                            "all new delivered orders"
+                            if limit is None
+                            else f"up to {limit} new delivered orders",
+                        ),
+                    ],
+                )
+                if not message_refs:
+                    continue
 
-        _log_block(
-            "CLOSET SYNC — AMAZON DELIVERED EMAIL SEARCH",
-            [
-                ("Delivered matches", str(len(message_refs[:search_limit]))),
-                ("New emails per sync", str(limit)),
-            ],
-        )
-
-        for message_ref in message_refs[:search_limit]:
-            if processed_new >= limit:
+            if limit is not None and processed_new >= limit:
                 break
+            message_ref = message_refs.pop(0)
             message_id = str(message_ref.get("id") or "")
             if not message_id:
                 continue
@@ -1284,6 +1310,7 @@ def import_gmail_orders(
                     subject,
                     sender,
                 )
+                report_progress()
                 continue
             root_text = _body_text(payload) or str(message.get("snippet") or "")
             order_id = _amazon_order_id(payload, root_text)
@@ -1295,6 +1322,7 @@ def import_gmail_orders(
                     "gmail_delivered_order_already_imported order_id=%s",
                     order_id,
                 )
+                report_progress()
                 continue
             processed_new += 1
             email_index = processed_new
@@ -1377,7 +1405,7 @@ def import_gmail_orders(
                     else "No product imported"
                 )
                 _log_block(
-                    f"CLOSET SYNC — NEW DELIVERED EMAIL {email_index} OF {limit}",
+                    f"CLOSET SYNC — NEW DELIVERED EMAIL {email_index}",
                     [
                         ("Subject", subject),
                         ("Order", order_id or "not found"),
@@ -1403,6 +1431,7 @@ def import_gmail_orders(
                         ("Result", result),
                     ],
                 )
+            report_progress()
         _log_block(
             "CLOSET SYNC — COMPLETE",
             [
