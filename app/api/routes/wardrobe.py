@@ -25,7 +25,6 @@ from app.services.wardrobe import (
     ensure_profile,
     get_owned_item,
 )
-from app.services.pilot_limits import consume_ai_slot
 
 router = APIRouter()
 logger = logging.getLogger("stylestack.wardrobe")
@@ -62,8 +61,6 @@ async def analyze_image_preview(
         raise HTTPException(status_code=422, detail="Uploaded image is empty")
     if len(contents) > 4 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Preview image exceeds the 4 MB AI limit")
-    if not consume_ai_slot(current_user["uid"], "preview"):
-        raise HTTPException(status_code=429, detail="Free pilot AI limit reached for today")
     try:
         tags = analyze_clothing_bytes(contents, content_type)
         logger.info(
@@ -100,8 +97,6 @@ async def detect_items_preview(
         raise HTTPException(status_code=422, detail="Uploaded image is empty")
     if len(contents) > 4 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Preview image exceeds the 4 MB AI limit")
-    if not consume_ai_slot(current_user["uid"], "detect"):
-        raise HTTPException(status_code=429, detail="Free pilot AI limit reached for today")
     try:
         result = analyze_multiple_clothing_bytes(contents, content_type)
         logger.info(
