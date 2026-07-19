@@ -349,6 +349,14 @@ The local scheduler checks enabled profiles every minute and uses Firebase Admin
 
 The scheduler is process-local for MVP development. Set `NOTIFICATION_SCHEDULER_ENABLED=false` on extra API workers or replace it with one durable scheduled worker before horizontally scaling.
 
+Connected Google Calendars are refreshed automatically in the same background
+scheduler. The default interval is five minutes, so a meeting added shortly
+before it starts can appear without the user pressing Sync. Configure
+`GOOGLE_CALENDAR_SYNC_INTERVAL_SECONDS` (minimum 60) or disable it with
+`GOOGLE_CALENDAR_AUTO_SYNC_ENABLED=false`. This requires the API process to be
+running; a sleeping/free web service cannot perform background work while it is
+stopped.
+
 ## 4. Deploy to Render
 
 ### Free pilot mode (recommended while validating the product)

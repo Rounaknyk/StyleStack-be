@@ -77,7 +77,10 @@ class NotificationScheduler:
             last_value = profile.get("google_calendar_last_synced_at")
             if last_value:
                 last_sync = datetime.fromisoformat(str(last_value).replace("Z", "+00:00"))
-                if now - last_sync < timedelta(hours=24):
+                interval = max(
+                    60, get_settings().google_calendar_sync_interval_seconds
+                )
+                if now - last_sync < timedelta(seconds=interval):
                     continue
             try:
                 access_token = refresh_access_token(profile["google_calendar_refresh_token"])

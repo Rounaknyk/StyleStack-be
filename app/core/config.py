@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     google_oauth_client_id: str | None = None
     google_oauth_client_secret: str | None = None
     google_calendar_auto_sync_enabled: bool = True
+    # Refresh connected calendars frequently enough to catch last-minute
+    # meetings without polling Google on every API request.
+    google_calendar_sync_interval_seconds: int = 300
 
     # Cost-control defaults for the free pilot. Set false when moving to a
     # durable worker/paid provider; all existing full-fidelity behavior then
