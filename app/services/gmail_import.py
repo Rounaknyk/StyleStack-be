@@ -1228,25 +1228,46 @@ def import_gmail_orders(
     limit: int,
 ) -> tuple[int, int, int]:
     scanned = imported = skipped = 0
+    processed_new = 0
+    existing_order_ids: set[str] = set()
+    try:
+        existing_rows = (
+            client.table("wardrobe_items")
+            .select("source_external_id")
+            .eq("owner_firebase_uid", uid)
+            .eq("import_source", "gmail")
+            .execute()
+        )
+        for row in existing_rows.data or []:
+            external_id = str(row.get("source_external_id") or "")
+            match = re.match(r"amazon:([^:]+):", external_id)
+            if match:
+                existing_order_ids.add(match.group(1))
+    except Exception:
+        logger.warning("gmail_existing_orders_unavailable uid=%s", uid)
+
     with httpx.Client(timeout=30) as http:
+        search_limit = min(50, max(limit, limit * 5))
         listing = _gmail_get(
             http,
             "messages",
             access_token,
             q=AMAZON_DELIVERED_QUERY,
-            maxResults=limit,
+            maxResults=search_limit,
         )
         message_refs = listing.get("messages", []) or []
 
         _log_block(
             "CLOSET SYNC — AMAZON DELIVERED EMAIL SEARCH",
             [
-                ("Delivered matches", str(len(message_refs[:limit]))),
-                ("Maximum checked", str(limit)),
+                ("Delivered matches", str(len(message_refs[:search_limit]))),
+                ("New emails per sync", str(limit)),
             ],
         )
 
-        for email_index, message_ref in enumerate(message_refs[:limit], start=1):
+        for message_ref in message_refs[:search_limit]:
+            if processed_new >= limit:
+                break
             message_id = str(message_ref.get("id") or "")
             if not message_id:
                 continue
@@ -1268,6 +1289,15 @@ def import_gmail_orders(
             order_id = _amazon_order_id(payload, root_text)
             if not order_id:
                 order_id = _amazon_thread_order_id(http, access_token, message)
+            if order_id and order_id in existing_order_ids:
+                skipped += 1
+                logger.debug(
+                    "gmail_delivered_order_already_imported order_id=%s",
+                    order_id,
+                )
+                continue
+            processed_new += 1
+            email_index = processed_new
             (
                 text,
                 candidates,
@@ -1324,6 +1354,8 @@ def import_gmail_orders(
                     imported_names.append(
                         analysis.name or candidate.hint or "Imported item"
                     )
+                    if order_id:
+                        existing_order_ids.add(order_id)
                 except Exception as exc:
                     failed += 1
                     logger.warning(
@@ -1345,7 +1377,7 @@ def import_gmail_orders(
                     else "No product imported"
                 )
                 _log_block(
-                    f"CLOSET SYNC — DELIVERED EMAIL {email_index} OF {len(message_refs[:limit])}",
+                    f"CLOSET SYNC — NEW DELIVERED EMAIL {email_index} OF {limit}",
                     [
                         ("Subject", subject),
                         ("Order", order_id or "not found"),

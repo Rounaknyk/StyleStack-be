@@ -484,6 +484,48 @@ def read_item_tag_status(
     return TagStatusResponse(status=item["ai_tag_status"])
 
 
+@router.post("/items/{item_id}/retry-processing", response_model=WardrobeItemResponse)
+def retry_wardrobe_item_processing(
+    item_id: UUID, current_user: CurrentUser
+) -> dict[str, Any]:
+    client = get_supabase_client()
+    uid = current_user["uid"]
+    item = get_owned_item(client, str(item_id), uid)
+    if item["ai_tag_status"] in ("pending", "processing"):
+        raise HTTPException(status_code=409, detail="This item is already processing")
+    image_path = item.get("image_path")
+    if not image_path:
+        raise HTTPException(
+            status_code=422,
+            detail="This item has no saved image to analyze. Enter details manually.",
+        )
+    try:
+        background_jobs.retry_ai_tagging(
+            ImageTaggingJob(
+                item_id=str(item_id),
+                image_path=str(image_path),
+                owner_uid=uid,
+                category=item.get("category"),
+                generate_name=item.get("name") == "New wardrobe item",
+            )
+        )
+        refreshed = get_owned_item(client, str(item_id), uid)
+        return refreshed
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "wardrobe_item_retry_failed uid=%s item_id=%s error_type=%s",
+            uid,
+            item_id,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Could not queue this item right now. Please try again shortly.",
+        ) from exc
+
+
 @router.put("/items/{item_id}", response_model=WardrobeItemResponse)
 def update_wardrobe_item(
     item_id: UUID,

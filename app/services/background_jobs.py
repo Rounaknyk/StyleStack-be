@@ -62,6 +62,47 @@ class BackgroundJobQueue:
             logger.error("background_queue_full item_id=%s", job.item_id)
             return False
 
+    def retry_ai_tagging(self, job: ImageTaggingJob) -> None:
+        """Retry only AI tagging for an already prepared wardrobe image."""
+        client = get_supabase_client()
+        settings = get_settings()
+        bucket = client.storage.from_(settings.supabase_storage_bucket)
+        downloaded = bucket.download(job.image_path)
+        if isinstance(downloaded, bytes):
+            image = downloaded
+        elif hasattr(downloaded, "content"):
+            image = downloaded.content
+        else:
+            raise RuntimeError("Supabase did not return image bytes")
+        if not image:
+            raise RuntimeError("Downloaded wardrobe image is empty")
+
+        base_update = {"image_path": job.image_path}
+        image_hash = perceptual_hash(image)
+        suffix = job.image_path.rsplit(".", 1)[-1].casefold()
+        content_type = {
+            "png": "image/png",
+            "webp": "image/webp",
+        }.get(suffix, "image/jpeg")
+        client.table("wardrobe_items").update(
+            {"ai_tag_status": "pending", "tagged": False}
+        ).eq("id", job.item_id).eq(
+            "owner_firebase_uid", job.owner_uid
+        ).execute()
+        ai_request_queue.enqueue(
+            owner_uid=job.owner_uid,
+            kind="single",
+            image=image,
+            content_type=content_type,
+            image_hash=image_hash,
+            on_complete=lambda analysis_job: self._finish_ai_tagging(
+                job,
+                base_update,
+                analysis_job,
+            ),
+        )
+        logger.info("image_tagging_retry_queued item_id=%s", job.item_id)
+
     def stop(self) -> None:
         with self._lock:
             thread = self._thread
