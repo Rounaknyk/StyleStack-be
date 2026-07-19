@@ -1,4 +1,5 @@
-from datetime import date
+import asyncio
+from datetime import date, datetime, timezone
 from decimal import Decimal
 import logging
 from typing import Annotated, Any
@@ -17,8 +18,9 @@ from app.models.wardrobe import (
     WearLogResponse,
 )
 from app.models.ai_tags import ClothingDetection, ClothingTags
-from app.services.ai_tagging import analyze_clothing_bytes, analyze_multiple_clothing_bytes
+from app.services.ai_request_queue import AiRequestJob, ai_request_queue
 from app.services.background_jobs import ImageTaggingJob, background_jobs
+from app.services.image_fingerprint import perceptual_hash
 from app.services.wardrobe import (
     add_signed_image_url,
     database_error,
@@ -37,6 +39,147 @@ ALLOWED_IMAGE_TYPES = {
 }
 
 
+def _cached_analysis(
+    image_hash: str, kind: str
+) -> dict[str, Any] | None:
+    client = get_supabase_client()
+    try:
+        response = (
+            client.table("ai_image_analysis_cache")
+            .select("analysis,hit_count")
+            .eq("image_hash", image_hash)
+            .eq("analysis_kind", kind)
+            .limit(1)
+            .execute()
+        )
+        if not response.data:
+            return None
+        row = response.data[0]
+        try:
+            client.table("ai_image_analysis_cache").update(
+                {
+                    "hit_count": int(row.get("hit_count") or 0) + 1,
+                    "last_used_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ).eq("image_hash", image_hash).eq("analysis_kind", kind).execute()
+        except Exception:
+            logger.warning("ai_analysis_cache_hit_count_failed hash=%s", image_hash)
+        analysis = row.get("analysis")
+        return analysis if isinstance(analysis, dict) else None
+    except Exception as exc:
+        logger.warning(
+            "ai_analysis_cache_lookup_failed hash=%s error_type=%s",
+            image_hash,
+            type(exc).__name__,
+        )
+        return None
+
+
+def _job_response(job: AiRequestJob) -> dict[str, Any]:
+    return ai_request_queue.snapshot(job)
+
+
+async def _read_ai_image(image: UploadFile) -> tuple[bytes, str]:
+    content_type = (image.content_type or "").lower()
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status_code=415, detail="Image must be JPEG, PNG, or WebP")
+    contents = await image.read(4 * 1024 * 1024 + 1)
+    await image.close()
+    if not contents:
+        raise HTTPException(status_code=422, detail="Uploaded image is empty")
+    if len(contents) > 4 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Preview image exceeds the 4 MB AI limit")
+    return contents, content_type
+
+
+def _enqueue_or_reuse(
+    *, uid: str, kind: str, contents: bytes, content_type: str
+) -> AiRequestJob:
+    image_hash = perceptual_hash(contents)
+    cached = _cached_analysis(image_hash, kind)
+    if cached is not None:
+        return ai_request_queue.completed_from_cache(
+            owner_uid=uid,
+            kind=kind,  # type: ignore[arg-type]
+            image_hash=image_hash,
+            result=cached,
+        )
+    try:
+        return ai_request_queue.enqueue(
+            owner_uid=uid,
+            kind=kind,  # type: ignore[arg-type]
+            image=contents,
+            content_type=content_type,
+            image_hash=image_hash,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+async def _await_analysis_job(job: AiRequestJob) -> dict[str, Any]:
+    while job.state in ("queued", "processing"):
+        await asyncio.sleep(0.25)
+    if job.state == "completed" and job.result is not None:
+        return job.result
+    raise HTTPException(
+        status_code=502,
+        detail=job.error or "AI could not analyze this image.",
+    )
+
+
+@router.post("/analysis-jobs", status_code=status.HTTP_202_ACCEPTED)
+async def create_analysis_job(
+    current_user: CurrentUser,
+    image: Annotated[UploadFile, File(description="JPEG, PNG, or WebP; maximum 4 MB")],
+    kind: Annotated[str, Form(pattern="^(single|multiple)$")] = "single",
+) -> dict[str, Any]:
+    contents, content_type = await _read_ai_image(image)
+    job = _enqueue_or_reuse(
+        uid=current_user["uid"],
+        kind=kind,
+        contents=contents,
+        content_type=content_type,
+    )
+    return _job_response(job)
+
+
+@router.get("/analysis-jobs/{job_id}")
+def read_analysis_job(
+    job_id: str,
+    current_user: CurrentUser,
+) -> dict[str, Any]:
+    job = ai_request_queue.get(job_id, current_user["uid"])
+    if not job:
+        raise HTTPException(status_code=404, detail="Analysis job not found")
+    return _job_response(job)
+
+
+@router.delete("/analysis-jobs/{job_id}")
+def cancel_analysis_job(
+    job_id: str,
+    current_user: CurrentUser,
+) -> dict[str, Any]:
+    job = ai_request_queue.cancel(job_id, current_user["uid"])
+    if not job:
+        raise HTTPException(status_code=404, detail="Analysis job not found")
+    if job.state == "processing":
+        raise HTTPException(status_code=409, detail="Analysis is already processing")
+    return _job_response(job)
+
+
+@router.post("/analysis-jobs/{job_id}/retry")
+def retry_analysis_job(
+    job_id: str,
+    current_user: CurrentUser,
+) -> dict[str, Any]:
+    job = ai_request_queue.retry(job_id, current_user["uid"])
+    if not job:
+        raise HTTPException(status_code=404, detail="Analysis job not found")
+    if job.state == "failed":
+        raise HTTPException(status_code=409, detail="This job can no longer be retried")
+    return _job_response(job)
+
+
 def parse_csv(value: str | None) -> list[str]:
     if not value:
         return []
@@ -48,21 +191,15 @@ async def analyze_image_preview(
     current_user: CurrentUser,
     image: Annotated[UploadFile, File(description="JPEG, PNG, or WebP; maximum 4 MB")],
 ) -> ClothingTags:
-    content_type = (image.content_type or "").lower()
-    if content_type not in ALLOWED_IMAGE_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail="Image must be JPEG, PNG, or WebP",
-        )
-    # Groq's base64 image request limit is 4 MB.
-    contents = await image.read(4 * 1024 * 1024 + 1)
-    await image.close()
-    if not contents:
-        raise HTTPException(status_code=422, detail="Uploaded image is empty")
-    if len(contents) > 4 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Preview image exceeds the 4 MB AI limit")
+    contents, content_type = await _read_ai_image(image)
     try:
-        tags = analyze_clothing_bytes(contents, content_type)
+        job = _enqueue_or_reuse(
+            uid=current_user["uid"],
+            kind="single",
+            contents=contents,
+            content_type=content_type,
+        )
+        tags = ClothingTags.model_validate(await _await_analysis_job(job))
         logger.info(
             "image_preview_analyzed uid=%s brand=%s category=%s",
             current_user["uid"],
@@ -88,17 +225,15 @@ async def detect_items_preview(
     image: Annotated[UploadFile, File(description="JPEG, PNG, or WebP; maximum 4 MB")],
 ) -> ClothingDetection:
     """Return every wardrobe-relevant item visible in one photo."""
-    content_type = (image.content_type or "").lower()
-    if content_type not in ALLOWED_IMAGE_TYPES:
-        raise HTTPException(status_code=415, detail="Image must be JPEG, PNG, or WebP")
-    contents = await image.read(4 * 1024 * 1024 + 1)
-    await image.close()
-    if not contents:
-        raise HTTPException(status_code=422, detail="Uploaded image is empty")
-    if len(contents) > 4 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Preview image exceeds the 4 MB AI limit")
+    contents, content_type = await _read_ai_image(image)
     try:
-        result = analyze_multiple_clothing_bytes(contents, content_type)
+        job = _enqueue_or_reuse(
+            uid=current_user["uid"],
+            kind="multiple",
+            contents=contents,
+            content_type=content_type,
+        )
+        result = ClothingDetection.model_validate(await _await_analysis_job(job))
         logger.info(
             "image_items_detected uid=%s item_count=%s",
             current_user["uid"],

@@ -13,6 +13,7 @@ from app.models.ai_tags import (
     OutfitSelfieVisionResult,
 )
 from app.services.gemini import gemini_json_from_image
+from app.services.groq_rate_limit import groq_rate_gate
 
 logger = logging.getLogger("stylestack.ai")
 
@@ -97,19 +98,27 @@ Return ONLY valid JSON in this exact shape:
 Return at most 12 items, ordered by prominence. If the image contains one garment, return one item."""
 
 
-def analyze_clothing_image(image_url: str) -> ClothingTags:
+def _groq_post(payload: dict[str, object]) -> httpx.Response:
+    settings = get_settings()
+    return groq_rate_gate.post(
+        headers={
+            "Authorization": f"Bearer {settings.groq_api_key}",
+            "Content-Type": "application/json",
+        },
+        payload=payload,
+        timeout=settings.groq_request_timeout_seconds,
+    )
+
+
+def analyze_clothing_image(
+    image_url: str, *, owner_uid: str | None = None
+) -> ClothingTags:
     """Analyze one image with Groq, falling back to Gemini."""
     settings = get_settings()
     groq_error: Exception | None = None
     if settings.groq_api_key:
         try:
-            response = httpx.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {settings.groq_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
+            response = _groq_post({
             "model": settings.groq_vision_model,
             "reasoning_effort": "none",
             "messages": [
@@ -130,15 +139,13 @@ def analyze_clothing_image(image_url: str) -> ClothingTags:
             "top_p": 0.8,
             "presence_penalty": 1.5,
             "max_completion_tokens": 512,
-                },
-                timeout=settings.groq_request_timeout_seconds,
-            )
-            response.raise_for_status()
+                })
             return ClothingTags.model_validate_json(
                 response.json()["choices"][0]["message"]["content"]
             )
         except Exception as exc:
             groq_error = exc
+            _log_provider_failure("groq", exc)
     if settings.gemini_api_key:
         if image_url.startswith("data:"):
             header, encoded = image_url.split(",", 1)
@@ -157,14 +164,18 @@ def analyze_clothing_image(image_url: str) -> ClothingTags:
     raise RuntimeError("No AI vision provider is configured")
 
 
-def analyze_clothing_bytes(image: bytes, content_type: str) -> ClothingTags:
+def analyze_clothing_bytes(
+    image: bytes, content_type: str, *, owner_uid: str | None = None
+) -> ClothingTags:
     """Analyze an upload preview before the wardrobe item is created."""
     encoded = base64.b64encode(image).decode("ascii")
-    return analyze_clothing_image(f"data:{content_type};base64,{encoded}")
+    return analyze_clothing_image(
+        f"data:{content_type};base64,{encoded}", owner_uid=owner_uid
+    )
 
 
 def analyze_multiple_clothing_bytes(
-    image: bytes, content_type: str
+    image: bytes, content_type: str, *, owner_uid: str | None = None
 ) -> ClothingDetection:
     """Detect multiple garments in one upload preview."""
     settings = get_settings()
@@ -172,13 +183,7 @@ def analyze_multiple_clothing_bytes(
     groq_error: Exception | None = None
     if settings.groq_api_key:
         try:
-            response = httpx.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {settings.groq_api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
+            response = _groq_post({
             "model": settings.groq_vision_model,
             "messages": [
                 {
@@ -201,15 +206,13 @@ def analyze_multiple_clothing_bytes(
             "response_format": {"type": "json_object"},
             "temperature": 0.2,
             "max_completion_tokens": 1600,
-        },
-        timeout=settings.groq_request_timeout_seconds,
-            )
-            response.raise_for_status()
+        })
             return ClothingDetection.model_validate_json(
                 response.json()["choices"][0]["message"]["content"]
             )
         except Exception as exc:
             groq_error = exc
+            _log_provider_failure("groq", exc)
     if settings.gemini_api_key:
         return ClothingDetection.model_validate_json(
             gemini_json_from_image(MULTI_ITEM_PROMPT, image, content_type)
@@ -264,13 +267,7 @@ Return at most 12 items. Do not identify the person or infer sensitive traits.""
     groq_error: Exception | None = None
     if settings.groq_api_key:
         try:
-            response = httpx.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {settings.groq_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
+            response = _groq_post({
                     "model": settings.groq_vision_model,
                     "reasoning_effort": "none",
                     "messages": [
@@ -294,10 +291,7 @@ Return at most 12 items. Do not identify the person or infer sensitive traits.""
                     "response_format": {"type": "json_object"},
                     "temperature": 0.1,
                     "max_completion_tokens": 1800,
-                },
-                timeout=settings.groq_request_timeout_seconds,
-            )
-            response.raise_for_status()
+                })
             return OutfitSelfieVisionResult.model_validate_json(
                 response.json()["choices"][0]["message"]["content"]
             )

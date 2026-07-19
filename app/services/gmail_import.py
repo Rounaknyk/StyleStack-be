@@ -16,6 +16,7 @@ from PIL import Image, ImageOps
 from app.core.config import get_settings
 from app.models.imports import GmailProductAnalysis
 from app.services.gemini import gemini_json_from_image
+from app.services.groq_rate_limit import groq_rate_gate
 
 logger = logging.getLogger("stylestack.gmail_import")
 
@@ -1043,10 +1044,9 @@ def _analyze_product_image(candidate: _ImageCandidate, email_text: str) -> Gmail
     groq_error: Exception | None = None
     if settings.groq_api_key:
         try:
-            response = httpx.post(
-                "https://api.groq.com/openai/v1/chat/completions",
+            response = groq_rate_gate.post(
                 headers={"Authorization": f"Bearer {settings.groq_api_key}"},
-                json={
+                payload={
                     "model": settings.groq_vision_model,
                     "messages": [{
                         "role": "user",
@@ -1061,7 +1061,6 @@ def _analyze_product_image(candidate: _ImageCandidate, email_text: str) -> Gmail
                 },
                 timeout=settings.groq_request_timeout_seconds,
             )
-            response.raise_for_status()
             return GmailProductAnalysis.model_validate_json(
                 response.json()["choices"][0]["message"]["content"]
             )

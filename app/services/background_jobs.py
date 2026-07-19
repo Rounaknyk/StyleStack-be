@@ -2,15 +2,13 @@ import logging
 from dataclasses import dataclass
 from queue import Full, Queue
 from threading import Lock, Thread
-import time
 from typing import Final
-
-import httpx
 
 from app.core.config import get_settings
 from app.core.supabase import get_supabase_client
-from app.services.ai_tagging import analyze_clothing_image
-from app.services.pilot_limits import consume_ai_slot
+from app.models.ai_tags import ClothingTags
+from app.services.ai_request_queue import AiRequestJob, ai_request_queue
+from app.services.image_fingerprint import perceptual_hash
 from app.services.image_processing import (
     create_item_thumbnail,
     optimize_item_image,
@@ -186,45 +184,54 @@ class BackgroundJobQueue:
                 except Exception:
                     logger.warning("incoming_image_cleanup_failed path=%s", job.image_path)
                 logger.info("image_processing_completed item_id=%s", job.item_id)
+                if job.owner_uid:
+                    from app.services.notifications import notification_scheduler
+
+                    notification_scheduler.notify_wardrobe_item_ready(job.owner_uid)
                 return
 
-            signed = bucket.create_signed_url(processed_path, 300)
-            image_url = None
-            if isinstance(signed, dict):
-                image_url = signed.get("signedURL") or signed.get("signedUrl")
-            if not image_url:
-                raise RuntimeError("Supabase did not return a signed image URL")
-
             tags = None
-            settings = get_settings()
-            if settings.free_pilot_mode and not consume_ai_slot(job.owner_uid, "background_tagging"):
-                logger.warning("image_tagging_skipped reason=free_pilot_limit item_id=%s", job.item_id)
-                raise RuntimeError("Free pilot AI limit reached")
-            last_error: Exception | None = None
-            max_attempts = 1 if settings.free_pilot_mode else 3
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    tags = analyze_clothing_image(image_url)
-                    break
-                except Exception as exc:
-                    last_error = exc
-                    status_code = (
-                        exc.response.status_code
-                        if isinstance(exc, httpx.HTTPStatusError)
-                        else None
-                    )
-                    logger.warning(
-                        "image_tagging_attempt_failed item_id=%s attempt=%s error_type=%s status=%s",
+            image_hash = perceptual_hash(original)
+            try:
+                cached = (
+                    client.table("ai_image_analysis_cache")
+                    .select("analysis")
+                    .eq("image_hash", image_hash)
+                    .eq("analysis_kind", "single")
+                    .limit(1)
+                    .execute()
+                )
+                if cached.data:
+                    tags = ClothingTags.model_validate(cached.data[0]["analysis"])
+                    logger.info(
+                        "background_tagging_cache_hit item_id=%s hash=%s",
                         job.item_id,
-                        attempt,
-                        type(exc).__name__,
-                        status_code,
+                        image_hash,
                     )
-                    if attempt < max_attempts:
-                        time.sleep(2 ** (attempt - 1))
-
+            except Exception:
+                logger.warning(
+                    "background_tagging_cache_lookup_failed item_id=%s",
+                    job.item_id,
+                )
             if tags is None:
-                raise RuntimeError(f"AI tagging failed after {max_attempts} attempt(s)") from last_error
+                ai_request_queue.enqueue(
+                    owner_uid=job.owner_uid,
+                    kind="single",
+                    image=optimized,
+                    content_type="image/jpeg",
+                    image_hash=image_hash,
+                    on_complete=lambda analysis_job: self._finish_ai_tagging(
+                        job,
+                        base_update,
+                        analysis_job,
+                    ),
+                )
+                try:
+                    bucket.remove([job.image_path])
+                except Exception:
+                    logger.warning("incoming_image_cleanup_failed path=%s", job.image_path)
+                logger.info("image_processing_queued_for_ai item_id=%s", job.item_id)
+                return
 
             completed_update = {
                 **base_update,
@@ -247,6 +254,10 @@ class BackgroundJobQueue:
             except Exception:
                 logger.warning("incoming_image_cleanup_failed path=%s", job.image_path)
             logger.info("image_processing_completed item_id=%s", job.item_id)
+            if job.owner_uid:
+                from app.services.notifications import notification_scheduler
+
+                notification_scheduler.notify_wardrobe_item_ready(job.owner_uid)
         except Exception as exc:
             logger.error(
                 "image_processing_failed item_id=%s error_type=%s",
@@ -276,6 +287,44 @@ class BackgroundJobQueue:
                         )
             except Exception:
                 logger.exception("image_tagging_failure_status_update_failed item_id=%s", job.item_id)
+
+    def _finish_ai_tagging(
+        self,
+        job: ImageTaggingJob,
+        base_update: dict[str, str],
+        analysis_job: AiRequestJob,
+    ) -> None:
+        client = get_supabase_client()
+        try:
+            if analysis_job.state != "completed" or not analysis_job.result:
+                raise RuntimeError(analysis_job.error or "AI analysis failed")
+            tags = ClothingTags.model_validate(analysis_job.result)
+            completed_update = {
+                **base_update,
+                "tagged": True,
+                "ai_tag_status": "completed",
+                "ai_category": tags.category,
+                "ai_color": tags.color,
+                "ai_season": tags.season,
+                "ai_formality": tags.formality,
+                "ai_description": tags.description,
+                "ai_visual_tags": tags.visual_tags,
+            }
+            if job.generate_name:
+                completed_update["name"] = f"{tags.color} {tags.category}".title()
+            client.table("wardrobe_items").update(completed_update).eq(
+                "id", job.item_id
+            ).execute()
+            logger.info("image_tagging_completed item_id=%s", job.item_id)
+            if job.owner_uid:
+                from app.services.notifications import notification_scheduler
+
+                notification_scheduler.notify_wardrobe_item_ready(job.owner_uid)
+        except Exception:
+            logger.exception("image_tagging_completion_failed item_id=%s", job.item_id)
+            client.table("wardrobe_items").update(
+                {**base_update, "tagged": False, "ai_tag_status": "failed"}
+            ).eq("id", job.item_id).execute()
 
 
 background_jobs = BackgroundJobQueue()

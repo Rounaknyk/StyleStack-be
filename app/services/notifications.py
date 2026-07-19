@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timedelta, timezone
-from threading import Event, Thread, Timer
+from threading import Event, Lock, Thread, Timer
 from zoneinfo import ZoneInfo
 
 from firebase_admin import messaging
@@ -17,6 +17,9 @@ class NotificationScheduler:
     def __init__(self) -> None:
         self._stop = Event()
         self._thread: Thread | None = None
+        self._completion_lock = Lock()
+        self._completion_counts: dict[str, int] = {}
+        self._completion_timers: dict[str, Timer] = {}
 
     def start(self) -> None:
         settings = get_settings()
@@ -106,6 +109,8 @@ class NotificationScheduler:
         body: str,
         data: dict[str, str],
         dedupe_key: str,
+        *,
+        send_push: bool = True,
     ) -> None:
         client.table("app_notifications").upsert(
             {
@@ -118,6 +123,9 @@ class NotificationScheduler:
             },
             on_conflict="owner_firebase_uid,dedupe_key",
         ).execute()
+        if not send_push:
+            logger.info("in_app_notification_created uid=%s type=%s", uid, notification_type)
+            return
         tokens = client.table("device_tokens").select("token").eq(
             "owner_firebase_uid", uid
         ).execute().data or []
@@ -130,6 +138,50 @@ class NotificationScheduler:
             tokens=[row["token"] for row in tokens],
         )
         messaging.send_each_for_multicast(message)
+
+    def notify_wardrobe_item_ready(self, uid: str) -> None:
+        """Debounce a burst of completed uploads into one useful notification."""
+        with self._completion_lock:
+            self._completion_counts[uid] = self._completion_counts.get(uid, 0) + 1
+            existing = self._completion_timers.pop(uid, None)
+            if existing:
+                existing.cancel()
+            timer = Timer(5, self._flush_wardrobe_ready, args=(uid,))
+            timer.daemon = True
+            self._completion_timers[uid] = timer
+            timer.start()
+
+    def _flush_wardrobe_ready(self, uid: str) -> None:
+        with self._completion_lock:
+            count = self._completion_counts.pop(uid, 0)
+            self._completion_timers.pop(uid, None)
+        if count <= 0:
+            return
+        try:
+            client = get_supabase_client()
+            profile = (
+                client.table("profiles")
+                .select("notification_enabled")
+                .eq("firebase_uid", uid)
+                .limit(1)
+                .execute()
+            )
+            push_enabled = bool(
+                profile.data and profile.data[0].get("notification_enabled")
+            )
+            title = "Your wardrobe item is ready" if count == 1 else f"Your {count} items are ready"
+            self._deliver(
+                client,
+                uid,
+                "wardrobe_ready",
+                title,
+                "AI details are complete. Open your wardrobe to review them.",
+                {"type": "wardrobe_ready"},
+                f"wardrobe-ready:{uid}:{int(datetime.now(timezone.utc).timestamp() // 5)}",
+                send_push=push_enabled,
+            )
+        except Exception:
+            logger.exception("wardrobe_ready_notification_failed uid=%s", uid)
 
     def process_daily_outfit(self, client, profile: dict, now: datetime) -> str:
         """Create and deliver the daily outfit. Used by both scheduler and simulations."""

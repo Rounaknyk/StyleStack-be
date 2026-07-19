@@ -220,6 +220,36 @@ Possible statuses are `pending`, `processing`, `completed`, and `failed`. AI fai
 
 The Week 1 queue is intentionally process-local: queued jobs are lost if the process restarts, and multiple Gunicorn workers each have their own queue. Move to a durable queue such as Redis before production workloads require guaranteed processing.
 
+### Groq request queue and duplicate reuse
+
+Wardrobe preview analysis uses a fair, process-local queue. The queue exposes
+position and ETA, allows queued jobs to be canceled/retried, and lets the mobile
+app remain navigable while work continues:
+
+```text
+POST   /api/v1/wardrobe/analysis-jobs
+GET    /api/v1/wardrobe/analysis-jobs/{job_id}
+POST   /api/v1/wardrobe/analysis-jobs/{job_id}/retry
+DELETE /api/v1/wardrobe/analysis-jobs/{job_id}
+```
+
+One process-wide rolling gate covers Groq calls from wardrobe vision, outfit
+generation, and Gmail import. Its default is 30 requests in any rolling
+60-second window. Wardrobe queue scheduling allows three jobs per user per
+minute and temporarily skips a capped user's jobs so other users can progress;
+it does not reject the extra jobs.
+
+Before enqueueing, StyleStack creates a perceptual hash. Matching hashes reuse
+the cached structured analysis without calling an AI provider. Run
+`supabase/migrations/202607190001_add_ai_analysis_cache.sql` before enabling
+this flow.
+
+Groq 429 responses honor `Retry-After`, retry once through the same rolling
+gate, and only then use the configured Gemini fallback. The queue is deliberately
+in-memory for the pilot: jobs do not survive an API restart and each horizontally
+scaled API instance would have its own 30-RPM gate. Use one API instance until
+the queue moves to a shared durable worker/Redis.
+
 ### Outfit Selfies
 
 The mobile app can photograph a worn outfit, match visible pieces against the

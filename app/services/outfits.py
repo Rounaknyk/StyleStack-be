@@ -3,7 +3,6 @@ import logging
 from datetime import date
 from typing import Any
 
-import httpx
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
@@ -13,6 +12,7 @@ from app.prompts.outfit_stylist import build_stylist_prompt
 from app.services.wardrobe import add_signed_image_url
 from app.services.weather import get_current_weather
 from app.services.inspiration import fetch_outfit_inspiration
+from app.services.groq_rate_limit import groq_rate_gate
 
 logger = logging.getLogger("stylestack.outfits")
 
@@ -49,10 +49,9 @@ def _call_stylist(
         occasion=occasion,
         profile_json=json.dumps(style_profile or {}),
     )
-    response = httpx.post(
-        "https://api.groq.com/openai/v1/chat/completions",
+    response = groq_rate_gate.post(
         headers={"Authorization": f"Bearer {settings.groq_api_key}"},
-        json={
+        payload={
             "model": settings.groq_vision_model,
             "reasoning_effort": "none",
             "messages": [
@@ -68,7 +67,6 @@ def _call_stylist(
         },
         timeout=settings.groq_request_timeout_seconds,
     )
-    response.raise_for_status()
     return StylingResult.model_validate_json(
         response.json()["choices"][0]["message"]["content"]
     )

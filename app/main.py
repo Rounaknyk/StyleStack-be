@@ -13,6 +13,7 @@ from app.core.config import get_settings
 from app.core.firebase import get_firebase_app
 from app.core.logging import configure_logging
 from app.services.background_jobs import background_jobs
+from app.services.ai_request_queue import ai_request_queue
 from app.services.notifications import notification_scheduler
 
 settings = get_settings()
@@ -23,11 +24,13 @@ logger = logging.getLogger("stylestack.api")
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     get_firebase_app()
+    ai_request_queue.start()
     background_jobs.start()
     notification_scheduler.start()
     logger.info("application_started environment=%s", settings.environment)
     yield
     background_jobs.stop()
+    ai_request_queue.stop()
     notification_scheduler.stop()
     logger.info("application_stopped")
 

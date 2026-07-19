@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     groq_api_key: str | None = None
     groq_vision_model: str = "qwen/qwen3.6-27b"
     groq_request_timeout_seconds: float = 30.0
+    groq_requests_per_minute: int = 30
+    groq_default_retry_after_seconds: float = 2.0
+    ai_requests_per_user_per_minute: int = 3
+    ai_request_queue_max_size: int = 500
+    ai_request_job_retention_seconds: int = 3600
     gemini_api_key: str | None = None
     gemini_vision_model: str = "gemini-flash-latest"
     pexels_api_key: str | None = None

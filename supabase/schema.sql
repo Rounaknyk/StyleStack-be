@@ -307,6 +307,18 @@ create table if not exists public.app_notifications (
     unique (owner_firebase_uid, dedupe_key)
 );
 
+create table if not exists public.ai_image_analysis_cache (
+    image_hash text not null,
+    analysis_kind text not null
+        check (analysis_kind in ('single', 'multiple')),
+    analysis jsonb not null,
+    provider text,
+    hit_count bigint not null default 0,
+    created_at timestamptz not null default now(),
+    last_used_at timestamptz not null default now(),
+    primary key (image_hash, analysis_kind)
+);
+
 create table if not exists public.outfit_selfies (
     id uuid primary key default gen_random_uuid(),
     owner_firebase_uid text not null references public.profiles(firebase_uid) on delete cascade,
@@ -356,6 +368,8 @@ create index if not exists calendar_events_owner_start_idx
     on public.calendar_events (owner_firebase_uid, start_at);
 create index if not exists app_notifications_owner_created_idx
     on public.app_notifications (owner_firebase_uid, created_at desc);
+create index if not exists ai_image_analysis_cache_last_used_idx
+    on public.ai_image_analysis_cache (last_used_at desc);
 create index if not exists outfit_selfies_owner_captured_idx
     on public.outfit_selfies (owner_firebase_uid, captured_at desc);
 create index if not exists outfit_selfie_detections_selfie_idx
@@ -406,6 +420,7 @@ create policy canvas_styles_backend_only on public.canvas_styles
 alter table public.device_tokens enable row level security;
 alter table public.calendar_events enable row level security;
 alter table public.app_notifications enable row level security;
+alter table public.ai_image_analysis_cache enable row level security;
 alter table public.outfit_selfies enable row level security;
 alter table public.outfit_selfie_detections enable row level security;
 
