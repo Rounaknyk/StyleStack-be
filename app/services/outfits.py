@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -16,10 +16,57 @@ from app.services.groq_rate_limit import groq_rate_gate
 
 logger = logging.getLogger("stylestack.outfits")
 
+RECENT_CLOTHING_COOLDOWN = timedelta(days=3)
+REPEATABLE_ACCESSORY_CATEGORIES = {
+    "accessory",
+    "accessories",
+    "bag",
+    "bags",
+    "backpack",
+    "backpacks",
+    "belt",
+    "belts",
+    "boot",
+    "boots",
+    "cap",
+    "caps",
+    "eyewear",
+    "footwear",
+    "handbag",
+    "handbags",
+    "hat",
+    "hats",
+    "jewellery",
+    "jewelry",
+    "sandal",
+    "sandals",
+    "scarf",
+    "scarves",
+    "shoe",
+    "shoes",
+    "slipper",
+    "slippers",
+    "sneaker",
+    "sneakers",
+    "sunglasses",
+    "wallet",
+    "wallets",
+    "watch",
+    "watches",
+}
+
 
 class StylingResult(BaseModel):
     item_ids: list[str] = Field(min_length=1, max_length=6)
     reasoning: str = Field(min_length=1, max_length=500)
+
+
+def _item_category(item: dict[str, Any]) -> str:
+    category = str(item.get("category") or "").strip()
+    ai_category = str(item.get("ai_category") or "").strip()
+    if category.casefold() in {"", "other", "unknown"} and ai_category:
+        return ai_category
+    return category or ai_category
 
 
 def _call_stylist(
@@ -35,7 +82,7 @@ def _call_stylist(
         {
             "id": item["id"],
             "name": item["name"],
-            "category": item.get("category") or item.get("ai_category"),
+            "category": _item_category(item),
             "color": item.get("color") or item.get("ai_color"),
             "season": item.get("season") or item.get("ai_season"),
             "formality": item.get("formality") or item.get("ai_formality"),
@@ -124,6 +171,74 @@ def build_personal_style_context(profile: dict[str, Any] | None) -> dict[str, An
     return result
 
 
+def _is_repeatable_accessory(item: dict[str, Any]) -> bool:
+    category = _item_category(item).casefold()
+    if category in REPEATABLE_ACCESSORY_CATEGORIES:
+        return True
+    descriptive_text = " ".join(
+        str(item.get(field) or "")
+        for field in ("name", "subcategory", "ai_description")
+    )
+    tokens = {
+        token
+        for token in "".join(
+            character if character.isalnum() else " "
+            for character in descriptive_text.casefold()
+        ).split()
+        if token
+    }
+    return bool(tokens & REPEATABLE_ACCESSORY_CATEGORIES)
+
+
+def _parse_worn_at(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def filter_recently_worn_clothing(
+    items: list[dict[str, Any]],
+    wear_logs: list[dict[str, Any]],
+    *,
+    now: datetime | None = None,
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """Exclude garments worn during the rolling three-day cooldown.
+
+    Accessories intentionally remain reusable because they commonly complete
+    several consecutive looks. The returned ID set is useful for observability
+    and tests without exposing wear history to the stylist model.
+    """
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    else:
+        current = current.astimezone(timezone.utc)
+    cutoff = current - RECENT_CLOTHING_COOLDOWN
+    items_by_id = {str(item["id"]): item for item in items}
+    excluded_ids: set[str] = set()
+    for row in wear_logs:
+        item_id = str(row.get("wardrobe_item_id") or "")
+        item = items_by_id.get(item_id)
+        worn_at = _parse_worn_at(row.get("worn_at"))
+        if (
+            item is not None
+            and worn_at is not None
+            and worn_at >= cutoff
+            and not _is_repeatable_accessory(item)
+        ):
+            excluded_ids.add(item_id)
+    return (
+        [item for item in items if str(item["id"]) not in excluded_ids],
+        excluded_ids,
+    )
+
+
 def create_outfit_suggestion(
     uid: str, city: str, occasion: str = "daily"
 ) -> dict[str, Any]:
@@ -154,20 +269,36 @@ def create_outfit_suggestion(
     if not items:
         raise ValueError("Add wardrobe items before requesting an outfit")
 
+    now = datetime.now(timezone.utc)
     worn_response = (
         client.table("wear_logs")
         .select("wardrobe_item_id,worn_at")
         .eq("owner_firebase_uid", uid)
+        .gte("worn_at", (now - RECENT_CLOTHING_COOLDOWN).isoformat())
         .order("worn_at", desc=True)
-        .limit(50)
         .execute()
     )
-    recently_worn = {
-        str(row["wardrobe_item_id"]) for row in (worn_response.data or [])[:10]
-    }
-    candidates = [item for item in items if str(item["id"]) not in recently_worn]
-    if not candidates:
-        candidates = items
+    candidates, excluded_ids = filter_recently_worn_clothing(
+        items,
+        worn_response.data or [],
+        now=now,
+    )
+    clothing_items = [item for item in items if not _is_repeatable_accessory(item)]
+    clothing_candidates = [
+        item for item in candidates if not _is_repeatable_accessory(item)
+    ]
+    if clothing_items and not clothing_candidates:
+        raise ValueError(
+            "All clothing in your wardrobe was worn within the last 3 days. "
+            "Add another piece or try again after the cooldown."
+        )
+    logger.info(
+        "outfit_recency_applied uid=%s cooldown_days=3 clothing_excluded=%s "
+        "accessories_available=%s",
+        uid,
+        len(excluded_ids),
+        sum(1 for item in candidates if _is_repeatable_accessory(item)),
+    )
 
     profile_rows = (
         client.table("profiles")
