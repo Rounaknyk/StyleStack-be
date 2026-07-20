@@ -88,5 +88,12 @@ class WearLogResponse(BaseModel):
     created_at: datetime
 
 
+class WearHistoryEntry(BaseModel):
+    id: str
+    worn_at: datetime
+    notes: str | None = None
+    items: list[WardrobeItemResponse] = Field(default_factory=list)
+
+
 class TagStatusResponse(BaseModel):
     status: TagStatus

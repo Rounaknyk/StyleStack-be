@@ -14,6 +14,7 @@ from app.models.wardrobe import (
     TagStatusResponse,
     WardrobeItemResponse,
     WardrobeItemUpdate,
+    WearHistoryEntry,
     WearLogCreate,
     WearLogResponse,
 )
@@ -77,6 +78,39 @@ def _cached_analysis(
 
 def _job_response(job: AiRequestJob) -> dict[str, Any]:
     return ai_request_queue.snapshot(job)
+
+
+def _group_wear_history(
+    logs: list[dict[str, Any]],
+    items_by_id: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    for log in logs:
+        worn_at = str(log.get("worn_at") or "")
+        notes = str(log.get("notes") or "")
+        key = (worn_at, notes)
+        group = groups.setdefault(
+            key,
+            {
+                "id": str(log.get("id") or f"{worn_at}:{notes}"),
+                "worn_at": worn_at,
+                "notes": log.get("notes"),
+                "items": [],
+                "_item_ids": set(),
+            },
+        )
+        item_id = str(log.get("wardrobe_item_id") or "")
+        item = items_by_id.get(item_id)
+        if item is not None and item_id not in group["_item_ids"]:
+            group["_item_ids"].add(item_id)
+            group["items"].append(item)
+
+    entries: list[dict[str, Any]] = []
+    for group in groups.values():
+        group.pop("_item_ids", None)
+        if group["items"]:
+            entries.append(group)
+    return entries
 
 
 async def _read_ai_image(image: UploadFile) -> tuple[bytes, str]:
@@ -465,6 +499,53 @@ def list_wardrobe_items(
         raise
     except Exception as exc:
         raise database_error("list wardrobe items", exc) from exc
+
+
+@router.get("/wear-history", response_model=list[WearHistoryEntry])
+def list_wear_history(
+    current_user: CurrentUser,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> list[dict[str, Any]]:
+    client = get_supabase_client()
+    uid = current_user["uid"]
+    try:
+        wear_response = (
+            client.table("wear_logs")
+            .select("*")
+            .eq("owner_firebase_uid", uid)
+            .order("worn_at", desc=True)
+            .limit(min(limit * 8, 300))
+            .execute()
+        )
+        logs = wear_response.data or []
+        if not logs:
+            return []
+
+        item_ids = list(
+            dict.fromkeys(
+                str(log["wardrobe_item_id"])
+                for log in logs
+                if log.get("wardrobe_item_id")
+            )
+        )
+        item_response = (
+            client.table("wardrobe_items")
+            .select("*")
+            .eq("owner_firebase_uid", uid)
+            .in_("id", item_ids)
+            .execute()
+        )
+        items_by_id = {
+            str(item["id"]): add_signed_image_url(client, item)
+            for item in (item_response.data or [])
+        }
+        entries = _group_wear_history(logs, items_by_id)[:limit]
+        logger.debug(
+            "wardrobe_wear_history_listed uid=%s count=%s", uid, len(entries)
+        )
+        return entries
+    except Exception as exc:
+        raise database_error("list wear history", exc) from exc
 
 
 @router.get("/items/{item_id}", response_model=WardrobeItemResponse)

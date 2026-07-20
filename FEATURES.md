@@ -386,47 +386,22 @@ POST /api/v1/calendar/notifications/{notification_id}/read
 Unread state is represented by `read_at`. Tapping an outfit notification opens
 the relevant planned outfit when an outfit ID is present.
 
-## 10. Outfit Selfie: log what was actually worn
+## 10. Wear history (selfie analysis paused)
 
-The user takes a full-body outfit selfie, then reviews the detections before
-confirming. The analysis:
+The Outfit Selfie rollout is paused to remove its vision-AI and image-processing
+cost from the MVP. The selfie router is not mounted and the Flutter app exposes
+no capture entry point. The dormant implementation and historical records are
+preserved so the feature can be reconsidered later without a destructive
+migration.
 
-1. Checks image quality and returns retake guidance when unusable.
-2. Detects visible garments/accessories.
-3. Matches each detection against the user's wardrobe candidates.
-4. Returns confidence, description, visual tags, and matched item ID.
-5. Lets the user uncheck detections or choose another wardrobe match.
-6. On confirmation, inserts wear logs for selected matched items.
-7. Saves the selfie and confirmed detections for the profile timeline.
+The active timeline uses `wear_logs` instead. Selecting **Log this outfit** on a
+suggested look records all its wardrobe items with the same timestamp. The
+timeline groups those rows and displays the logged pieces:
 
 ```text
-POST   /api/v1/wardrobe/outfit-selfies/analyze
-POST   /api/v1/wardrobe/outfit-selfies/{selfie_id}/confirm
-DELETE /api/v1/wardrobe/outfit-selfies/{selfie_id}
-GET    /api/v1/wardrobe/outfit-selfies/history
+POST /api/v1/outfits/{outfit_id}/wear
+GET  /api/v1/wardrobe/wear-history
 ```
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant F as Flutter review screen
-    participant API as FastAPI
-    participant AI as Vision model
-    participant DB as Supabase
-    U->>F: Capture selfie
-    F->>API: Analyze image
-    API->>DB: Load owned wardrobe candidates
-    API->>AI: Detect and match visible pieces
-    AI-->>API: Items, confidence, quality
-    API-->>F: Reviewable draft
-    U->>F: Correct/uncheck matches
-    F->>API: Confirm
-    API->>DB: Save selfie, detections, wear_logs
-    API-->>F: Confirmation result
-```
-
-Unmatched pieces are shown to the user with an option to add them later. The
-feature deliberately does not identify the person or infer sensitive traits.
 
 ## 11. Gmail Closet Sync
 
@@ -552,7 +527,7 @@ AI, weather, calendar, Gmail, inspiration, and push delivery.
 | Image processing | Not scale-ready | CPU/RAM-heavy local models in API workers | Dedicated image-worker queue and autoscaling |
 | AI tagging | Not scale-ready | One in-process worker; provider quotas | Durable jobs, backoff, idempotency, provider budgets |
 | Outfit generation | Partially ready | Synchronous AI + weather + Pexels calls | Cache by user/date/context and generate asynchronously |
-| Outfit selfies | Partially ready | Synchronous vision and large wardrobe prompt | Compress, cap candidates, queue longer analysis |
+| Outfit selfies | Disabled for MVP | Vision and image-processing cost | Reassess before a later opt-in rollout |
 | Gmail sync | Not scale-ready | Message pagination, image downloads, AI calls | Background jobs, checkpoints, per-order dedupe |
 | Google Calendar | Partially ready | Token refresh and repeated window sync | Incremental sync tokens and scheduled worker |
 | Notifications | Not scale-ready | Process-local minute poller | One durable scheduler and FCM fanout worker |

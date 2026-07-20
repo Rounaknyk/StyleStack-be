@@ -250,25 +250,20 @@ in-memory for the pilot: jobs do not survive an API restart and each horizontall
 scaled API instance would have its own 30-RPM gate. Use one API instance until
 the queue moves to a shared durable worker/Redis.
 
-### Outfit Selfies
+### Wear history (Outfit Selfies disabled)
 
-The mobile app can photograph a worn outfit, match visible pieces against the
-signed-in user's wardrobe, let the user correct every match, and then write the
-confirmed pieces to `wear_logs`. Accepted selfies are retained in private
-Supabase Storage and shown in the Profile outfit-history timeline. Low-quality
-photos are rejected before anything is saved.
+Outfit Selfies are intentionally disabled for the current MVP to avoid their
+vision-AI and image-processing cost. Their API router is not mounted, so a
+mobile client cannot start selfie analysis. The dormant implementation and
+existing private data remain available for a possible future rollout.
+
+The outfit timeline now reads ordinary `wear_logs`. Logging a suggested outfit
+adds each of its wardrobe items with one timestamp, and the timeline groups
+those records into a single look:
 
 ```text
-POST /api/v1/wardrobe/outfit-selfies/analyze
-POST /api/v1/wardrobe/outfit-selfies/{selfie_id}/confirm
-DELETE /api/v1/wardrobe/outfit-selfies/{selfie_id}
-GET  /api/v1/wardrobe/outfit-selfies/history
+GET /api/v1/wardrobe/wear-history
 ```
-
-AI-generated `ai_visual_tags` are intentionally separate from editable tags.
-They describe stable visual details used to match newly uploaded wardrobe items
-in future selfies. Run the latest `supabase/schema.sql` once before testing this
-feature; it adds the hidden tags and the two outfit-selfie tables.
 
 ### Gmail Closet Sync
 
