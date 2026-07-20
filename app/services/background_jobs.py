@@ -286,7 +286,17 @@ class BackgroundJobQueue:
                 "ai_visual_tags": tags.visual_tags,
             }
             if job.generate_name:
-                completed_update["name"] = f"{tags.color} {tags.category}".title()
+                completed_update.update(
+                    {
+                        "name": " ".join(
+                            part
+                            for part in (tags.brand, tags.color, tags.category)
+                            if part
+                        ).title(),
+                        "brand": tags.brand,
+                        "tags": tags.tags,
+                    }
+                )
             client.table("wardrobe_items").update(completed_update).eq(
                 "id", job.item_id
             ).execute()
@@ -352,7 +362,17 @@ class BackgroundJobQueue:
                 "ai_visual_tags": tags.visual_tags,
             }
             if job.generate_name:
-                completed_update["name"] = f"{tags.color} {tags.category}".title()
+                completed_update.update(
+                    {
+                        "name": " ".join(
+                            part
+                            for part in (tags.brand, tags.color, tags.category)
+                            if part
+                        ).title(),
+                        "brand": tags.brand,
+                        "tags": tags.tags,
+                    }
+                )
             client.table("wardrobe_items").update(completed_update).eq(
                 "id", job.item_id
             ).execute()

@@ -4,6 +4,7 @@ from threading import Event
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from app.services.ai_request_queue import AiRequestJob
 from app.services.background_jobs import BackgroundJobQueue, ImageTaggingJob
 
 
@@ -107,6 +108,65 @@ class BackgroundJobQueueTests(unittest.TestCase):
         self.assertEqual(
             table.updates[-1]["thumbnail_path"], "thumbnails/item-123.jpg"
         )
+
+    def test_automatic_tagging_persists_detected_brand_tags_and_name(self) -> None:
+        class FakeTable:
+            def __init__(self) -> None:
+                self.updates: list[dict] = []
+
+            def update(self, payload: dict):
+                self.updates.append(payload)
+                return self
+
+            def eq(self, field: str, value: str):
+                return self
+
+            def execute(self):
+                return SimpleNamespace(data=[])
+
+        table = FakeTable()
+        client = SimpleNamespace(table=lambda name: table)
+        analysis = AiRequestJob(
+            id="analysis-1",
+            owner_uid="user-1",
+            kind="single",
+            image=b"",
+            content_type="image/jpeg",
+            image_hash="hash",
+            state="completed",
+            result={
+                "brand": "Crocs",
+                "category": "shoes",
+                "color": "black",
+                "season": "all",
+                "formality": "casual",
+                "description": "Black Crocs clogs for casual everyday wear.",
+                "tags": ["clogs", "rubber", "Crocs"],
+                "visual_tags": ["perforated", "slip-on"],
+            },
+        )
+
+        with (
+            patch(
+                "app.services.background_jobs.get_supabase_client",
+                return_value=client,
+            ),
+        ):
+            BackgroundJobQueue()._finish_ai_tagging(
+                ImageTaggingJob(
+                    item_id="item-123",
+                    image_path="processed/item-123.jpg",
+                    generate_name=True,
+                ),
+                {"image_path": "processed/item-123.jpg"},
+                analysis,
+            )
+
+        completed = table.updates[-1]
+        self.assertEqual(completed["name"], "Crocs Black Shoes")
+        self.assertEqual(completed["brand"], "Crocs")
+        self.assertEqual(completed["tags"], ["clogs", "rubber", "Crocs"])
+        self.assertEqual(completed["ai_tag_status"], "completed")
 
 
 if __name__ == "__main__":
