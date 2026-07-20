@@ -1,7 +1,5 @@
 import logging
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
-
 from fastapi import APIRouter, HTTPException, status
 from firebase_admin import messaging
 from postgrest.exceptions import APIError
@@ -21,6 +19,7 @@ from app.models.onboarding import (
 )
 from app.services.account_deletion import AccountDeletionError, delete_user_account
 from app.services.notifications import notification_scheduler
+from app.services.timezones import normalize_timezone_name, resolve_timezone
 from app.services.wardrobe import ensure_profile
 
 router = APIRouter()
@@ -169,6 +168,8 @@ def update_preferences(payload: UserPreferencesUpdate, current_user: CurrentUser
     updates = payload.model_dump(exclude_unset=True, mode="json")
     if not updates:
         raise HTTPException(status_code=422, detail="At least one preference is required")
+    if "timezone" in updates:
+        updates["timezone"] = normalize_timezone_name(updates["timezone"])
     response = get_supabase_client().table("profiles").update(updates).eq(
         "firebase_uid", current_user["uid"]
     ).execute()
@@ -235,7 +236,13 @@ def _simulation_profile(uid: str) -> tuple[object, dict, datetime]:
     if not rows:
         raise HTTPException(status_code=404, detail="Profile not found")
     profile = rows[0]
-    now = datetime.now(ZoneInfo(profile.get("timezone") or "UTC"))
+    normalized_timezone = normalize_timezone_name(profile.get("timezone"))
+    if normalized_timezone != profile.get("timezone"):
+        client.table("profiles").update({"timezone": normalized_timezone}).eq(
+            "firebase_uid", uid
+        ).execute()
+        profile["timezone"] = normalized_timezone
+    now = datetime.now(resolve_timezone(normalized_timezone))
     return client, profile, now
 
 

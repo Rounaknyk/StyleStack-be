@@ -1,14 +1,13 @@
 import logging
 from datetime import datetime, timedelta, timezone
 from threading import Event, Lock, Thread, Timer
-from zoneinfo import ZoneInfo
-
 from firebase_admin import messaging
 
 from app.core.config import get_settings
 from app.core.supabase import get_supabase_client
 from app.services.outfits import create_outfit_suggestion
 from app.services.google_calendar import refresh_access_token, sync_google_events
+from app.services.timezones import resolve_timezone
 
 logger = logging.getLogger("stylestack.notifications")
 
@@ -52,7 +51,7 @@ class NotificationScheduler:
         ).eq("notification_enabled", True).execute().data or []
         for profile in profiles:
             try:
-                now = datetime.now(ZoneInfo(profile.get("timezone") or "UTC"))
+                now = datetime.now(resolve_timezone(profile.get("timezone")))
                 configured = str(profile.get("notification_time") or "08:00:00")[:5]
                 if now.strftime("%H:%M") != configured:
                     continue
@@ -211,7 +210,7 @@ class NotificationScheduler:
 
         def deliver() -> None:
             try:
-                now = datetime.now(ZoneInfo(profile.get("timezone") or "UTC"))
+                now = datetime.now(resolve_timezone(profile.get("timezone")))
                 self.process_daily_outfit(client, profile, now)
                 logger.info(
                     "daily_outfit_delayed_test_sent uid=%s delay_seconds=%s",

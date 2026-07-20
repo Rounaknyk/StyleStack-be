@@ -128,7 +128,22 @@ def create_outfit_suggestion(
     uid: str, city: str, occasion: str = "daily"
 ) -> dict[str, Any]:
     client = get_supabase_client()
-    weather = get_current_weather(city)
+    try:
+        weather = get_current_weather(city)
+    except Exception as exc:
+        logger.warning(
+            "weather_unavailable city=%s error_type=%s",
+            city,
+            type(exc).__name__,
+        )
+        weather = WeatherResponse(
+            city=city,
+            condition="Unavailable",
+            description=(
+                "Local weather is unavailable. Prioritize styling, occasion, "
+                "and generally comfortable choices."
+            ),
+        )
     items_response = (
         client.table("wardrobe_items")
         .select("*")

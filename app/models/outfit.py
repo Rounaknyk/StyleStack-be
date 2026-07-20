@@ -13,8 +13,8 @@ class OutfitSuggestionRequest(BaseModel):
 
 class WeatherResponse(BaseModel):
     city: str
-    temperature_c: float
-    feels_like_c: float
+    temperature_c: float | None = None
+    feels_like_c: float | None = None
     condition: str
     description: str
 
