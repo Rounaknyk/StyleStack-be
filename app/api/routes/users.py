@@ -81,6 +81,14 @@ class CurrentUserResponse(BaseModel):
     user_id: str
 
 
+class UserAccessResponse(BaseModel):
+    """Server-controlled access overrides for subscriptions and advertising."""
+
+    tester: bool = False
+    bypass_subscription: bool = False
+    bypass_ads: bool = False
+
+
 class SimulationResponse(BaseModel):
     kind: str
     notifications_sent: int
@@ -92,6 +100,42 @@ class SimulationResponse(BaseModel):
 def read_current_user(current_user: CurrentUser) -> CurrentUserResponse:
     """Return the Firebase UID represented by the caller's ID token."""
     return CurrentUserResponse(user_id=current_user["uid"])
+
+
+@router.get("/me/access", response_model=UserAccessResponse)
+def read_user_access(current_user: CurrentUser) -> UserAccessResponse:
+    """Return live tester overrides maintained by the owner in Supabase.
+
+    Matching is performed server-side against the verified Firebase email so
+    the mobile app cannot grant itself premium or ad-free access.
+    """
+    email = str(current_user.get("email") or "").strip().lower()
+    if not email or current_user.get("email_verified") is not True:
+        return UserAccessResponse()
+
+    try:
+        rows = (
+            get_supabase_client()
+            .table("access_overrides")
+            .select("bypass_subscription,bypass_ads,enabled")
+            .eq("email", email)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+    except APIError as exc:
+        # Monetization lookup failures must never break sign-in or ordinary
+        # app access. Fail closed to the normal (non-tester) experience.
+        logger.warning("access_override_lookup_failed code=%s", exc.code)
+        return UserAccessResponse()
+    if not rows or not rows[0].get("enabled"):
+        return UserAccessResponse()
+    return UserAccessResponse(
+        tester=True,
+        bypass_subscription=bool(rows[0].get("bypass_subscription")),
+        bypass_ads=bool(rows[0].get("bypass_ads")),
+    )
 
 
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)

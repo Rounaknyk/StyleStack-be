@@ -32,6 +32,18 @@ create table if not exists public.profiles (
     updated_at timestamptz not null default now()
 );
 
+-- Owner-managed tester access. Add lowercase verified Firebase emails here to
+-- bypass subscriptions and/or rewarded ads without publishing a new app.
+create table if not exists public.access_overrides (
+    email text primary key check (email = lower(trim(email))),
+    bypass_subscription boolean not null default true,
+    bypass_ads boolean not null default true,
+    enabled boolean not null default true,
+    note text,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
 alter table public.profiles
     add column if not exists city text,
     add column if not exists timezone text not null default 'Asia/Kolkata',
@@ -390,6 +402,11 @@ create trigger profiles_set_updated_at
 before update on public.profiles
 for each row execute function public.set_updated_at();
 
+drop trigger if exists access_overrides_set_updated_at on public.access_overrides;
+create trigger access_overrides_set_updated_at
+before update on public.access_overrides
+for each row execute function public.set_updated_at();
+
 drop trigger if exists wardrobe_items_set_updated_at on public.wardrobe_items;
 create trigger wardrobe_items_set_updated_at
 before update on public.wardrobe_items
@@ -408,6 +425,7 @@ for each row execute function public.set_updated_at();
 -- The FastAPI server uses the Supabase service-role key and enforces access by
 -- verified Firebase UID. RLS is enabled to deny direct client access by default.
 alter table public.profiles enable row level security;
+alter table public.access_overrides enable row level security;
 alter table public.wardrobe_items enable row level security;
 alter table public.wear_logs enable row level security;
 alter table public.outfits enable row level security;
