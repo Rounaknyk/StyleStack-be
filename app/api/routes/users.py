@@ -19,6 +19,10 @@ from app.models.onboarding import (
 )
 from app.services.account_deletion import AccountDeletionError, delete_user_account
 from app.services.notifications import notification_scheduler
+from app.services.push_notifications import (
+    build_multicast_message,
+    sync_broadcast_topic,
+)
 from app.services.timezones import normalize_timezone_name, resolve_timezone
 from app.services.wardrobe import ensure_profile
 
@@ -175,12 +179,33 @@ def update_preferences(payload: UserPreferencesUpdate, current_user: CurrentUser
     ).execute()
     if not response.data:
         raise HTTPException(status_code=404, detail="Profile not found")
+    if "notification_enabled" in updates:
+        tokens = (
+            get_supabase_client()
+            .table("device_tokens")
+            .select("token")
+            .eq("owner_firebase_uid", current_user["uid"])
+            .execute()
+            .data
+            or []
+        )
+        try:
+            sync_broadcast_topic(
+                [row["token"] for row in tokens],
+                subscribed=bool(updates["notification_enabled"]),
+            )
+        except Exception:
+            logger.exception(
+                "broadcast_topic_preference_sync_failed uid=%s",
+                current_user["uid"],
+            )
     return response.data[0]
 
 
 @router.post("/me/devices", status_code=204)
 def register_device(payload: DeviceTokenRequest, current_user: CurrentUser) -> None:
-    get_supabase_client().table("device_tokens").upsert(
+    client = get_supabase_client()
+    client.table("device_tokens").upsert(
         {
             "owner_firebase_uid": current_user["uid"],
             "token": payload.token,
@@ -188,10 +213,34 @@ def register_device(payload: DeviceTokenRequest, current_user: CurrentUser) -> N
         },
         on_conflict="token",
     ).execute()
+    profile = (
+        client.table("profiles")
+        .select("notification_enabled")
+        .eq("firebase_uid", current_user["uid"])
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if profile and profile[0].get("notification_enabled"):
+        try:
+            sync_broadcast_topic([payload.token], subscribed=True)
+        except Exception:
+            logger.exception(
+                "broadcast_topic_device_subscribe_failed uid=%s",
+                current_user["uid"],
+            )
 
 
 @router.delete("/me/devices", status_code=204)
 def unregister_device(payload: DeviceTokenRequest, current_user: CurrentUser) -> None:
+    try:
+        sync_broadcast_topic([payload.token], subscribed=False)
+    except Exception:
+        logger.exception(
+            "broadcast_topic_device_unsubscribe_failed uid=%s",
+            current_user["uid"],
+        )
     get_supabase_client().table("device_tokens").delete().eq(
         "owner_firebase_uid", current_user["uid"]
     ).eq("token", payload.token).execute()
@@ -207,12 +256,10 @@ def send_test_notification(current_user: CurrentUser) -> TestNotificationRespons
             status_code=422,
             detail="No notification device is registered. Enable notifications on a physical device first.",
         )
-    message = messaging.MulticastMessage(
-        notification=messaging.Notification(
-            title="StyleStack test notification",
-            body="Push notifications are configured correctly 🎉",
-        ),
-        data={"type": "test_notification"},
+    message = build_multicast_message(
+        title="StyleStack test notification",
+        body="Push notifications are configured correctly 🎉",
+        data={"type": "test_notification", "destination": "today"},
         tokens=[row["token"] for row in tokens],
     )
     try:

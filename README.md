@@ -382,6 +382,46 @@ The local scheduler checks enabled profiles every minute and uses Firebase Admin
 
 The scheduler is process-local for MVP development. Set `NOTIFICATION_SCHEDULER_ENABLED=false` on extra API workers or replace it with one durable scheduled worker before horizontally scaling.
 
+### Owner broadcast notifications
+
+StyleStack can send an announcement to every device whose user has opted into
+notifications. Broadcasts support an optional public HTTPS image and a safe
+in-app destination (`today`, `wardrobe`, `planner`, `profile`,
+`notifications`, `saved_styles`, or a specific `outfit`). The endpoint is
+protected by a server-only key; never include that key in Flutter or Git.
+
+Configure Render with a long random value:
+
+```bash
+openssl rand -hex 32
+```
+
+Store the result as `ADMIN_NOTIFICATION_KEY` on Render, and export the same
+value only in your local terminal when sending:
+
+```bash
+export STYLESTACK_ADMIN_NOTIFICATION_KEY='your-secret'
+python scripts/send_broadcast_notification.py \
+  --title 'A fresh StyleStack edit is ready' \
+  --body 'Open the app to see what is new.' \
+  --destination today
+```
+
+Add media when useful:
+
+```bash
+python scripts/send_broadcast_notification.py \
+  --title 'Monsoon styling guide' \
+  --body 'Tap to open your wardrobe.' \
+  --destination wardrobe \
+  --image-url 'https://your-public-cdn.example.com/monsoon.jpg'
+```
+
+Use `--dry-run` first to validate credentials and the FCM payload without
+delivering it. Android uses StyleStack's monochrome status-bar icon. iOS always
+uses the installed app icon; rich images require the included Notification
+Service Extension and must be tested on a physical device.
+
 Connected Google Calendars are refreshed automatically in the same background
 scheduler. The default interval is five minutes, so a meeting added shortly
 before it starts can appear without the user pressing Sync. Configure

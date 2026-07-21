@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     openweather_base_url: str = "https://api.openweathermap.org/data/2.5"
     notification_scheduler_enabled: bool = True
     notification_poll_seconds: int = 60
+    # Protects the owner-only broadcast endpoint. Set a long random value in
+    # hosted environments and never ship it in the Flutter application.
+    admin_notification_key: str | None = None
+    broadcast_notification_topic: str = "stylestack_announcements"
     gmail_import_log_email_previews: bool = False
     google_oauth_client_id: str | None = None
     google_oauth_client_secret: str | None = None

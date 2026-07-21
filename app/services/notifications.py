@@ -4,6 +4,7 @@ from threading import Event, Lock, Thread, Timer
 from firebase_admin import messaging
 
 from app.core.config import get_settings
+from app.services.push_notifications import build_multicast_message
 from app.core.supabase import get_supabase_client
 from app.services.outfits import create_outfit_suggestion
 from app.services.google_calendar import refresh_access_token, sync_google_events
@@ -131,8 +132,9 @@ class NotificationScheduler:
         if not tokens:
             logger.info("in_app_notification_created uid=%s type=%s", uid, notification_type)
             return
-        message = messaging.MulticastMessage(
-            notification=messaging.Notification(title=title, body=body),
+        message = build_multicast_message(
+            title=title,
+            body=body,
             data=data,
             tokens=[row["token"] for row in tokens],
         )
