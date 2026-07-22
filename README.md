@@ -150,8 +150,17 @@ with:
 ```env
 BACKGROUND_REMOVAL_ENABLED=true
 BACKGROUND_REMOVAL_MODEL=birefnet-general-lite
+POOF_API_KEY=your-server-side-poof-key
+POOF_REQUEST_TIMEOUT_SECONDS=45
 FASHION_SEGMENTATION_ENABLED=true
 ```
+
+When `POOF_API_KEY` is configured, wardrobe jobs use Poof first for a fast,
+high-quality transparent cutout. If Poof is unavailable or its credits are
+exhausted, the same job automatically falls back to the local fashion
+segmentation/BiRefNet pipeline; the upload is never rejected only because Poof
+failed. Keep the key only in backend environment variables (for example, a
+Render secret), never in Flutter or Git.
 
 The removal model downloads on its first use. StyleStack preserves the original
 canvas during removal and never crops thumbnails. If removal fails, the worker

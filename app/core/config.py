@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # BiRefNet Lite is substantially more accurate around sleeves, collars,
     # hems, and soft garment edges than the tiny u2netp model.
     background_removal_model: str = "birefnet-general-lite"
+    # Poof is the fast, high-quality primary remover. When its credits are
+    # unavailable the image pipeline automatically falls back to the local
+    # segmentation/BiRefNet implementation below.
+    poof_api_key: str | None = None
+    poof_request_timeout_seconds: float = 45.0
     fashion_segmentation_enabled: bool = True
     fashion_segmentation_model_url: str = (
         "https://huggingface.co/Xenova/segformer_b2_clothes/resolve/main/onnx/model_quantized.onnx"

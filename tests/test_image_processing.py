@@ -7,6 +7,7 @@ from PIL import Image
 from app.services.image_processing import (
     create_item_thumbnail,
     optimize_item_image,
+    put_item_on_transparent_background,
     put_item_on_white_background,
 )
 from app.services.fashion_segmentation import CATEGORY_LABELS
@@ -20,6 +21,46 @@ def _jpeg(size: tuple[int, int] = (180, 120)) -> bytes:
 
 
 class ImageProcessingTests(unittest.TestCase):
+    def test_poof_is_used_before_local_background_models(self) -> None:
+        isolated = Image.new("RGBA", (180, 120), (0, 0, 0, 0))
+        isolated.putpixel((90, 60), (20, 40, 130, 255))
+        output = BytesIO()
+        isolated.save(output, "PNG")
+
+        with (
+            patch(
+                "app.services.image_processing._try_poof_background_removal",
+                return_value=output.getvalue(),
+            ),
+            patch(
+                "app.services.image_processing.isolate_garment_on_transparent",
+                side_effect=AssertionError("local segmentation should not run"),
+            ),
+        ):
+            result = put_item_on_transparent_background(_jpeg(), "shirt")
+
+        self.assertEqual(result, output.getvalue())
+
+    def test_local_model_remains_fallback_when_poof_is_unavailable(self) -> None:
+        isolated = Image.new("RGBA", (180, 120), (0, 0, 0, 0))
+        isolated.putpixel((90, 60), (20, 40, 130, 255))
+        output = BytesIO()
+        isolated.save(output, "PNG")
+
+        with (
+            patch(
+                "app.services.image_processing._try_poof_background_removal",
+                return_value=None,
+            ),
+            patch(
+                "app.services.image_processing.isolate_garment_on_transparent",
+                return_value=output.getvalue(),
+            ),
+        ):
+            result = put_item_on_transparent_background(_jpeg(), "shirt")
+
+        self.assertEqual(result, output.getvalue())
+
     def test_footwear_aliases_use_shoe_segmentation_labels(self) -> None:
         self.assertEqual(CATEGORY_LABELS["sneakers"], {9, 10})
         self.assertEqual(CATEGORY_LABELS["footwear"], {9, 10})

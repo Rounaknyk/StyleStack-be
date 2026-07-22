@@ -13,6 +13,8 @@ from app.services.fashion_segmentation import (
 
 logger = logging.getLogger("stylestack.images")
 
+_poof_disabled_for_process = False
+
 
 @lru_cache(maxsize=1)
 def _background_session():
@@ -20,6 +22,86 @@ def _background_session():
     from rembg import new_session
 
     return new_session(get_settings().background_removal_model)
+
+
+@lru_cache(maxsize=1)
+def _poof_client():
+    # Imported lazily so the SDK adds no startup cost when Poof is disabled.
+    from poof import Poof
+
+    settings = get_settings()
+    if not settings.poof_api_key:
+        raise RuntimeError("Poof is not configured")
+    return Poof(
+        api_key=settings.poof_api_key,
+        timeout=settings.poof_request_timeout_seconds,
+    )
+
+
+def _remove_background_with_poof(contents: bytes) -> bytes:
+    """Return a full-canvas transparent PNG produced by Poof."""
+    source = ImageOps.exif_transpose(Image.open(BytesIO(contents))).convert("RGBA")
+    result = _poof_client().remove_background(
+        contents,
+        format="png",
+        channels="rgba",
+        size="full",
+        crop=False,
+    )
+    data = getattr(result, "data", None)
+    if not isinstance(data, bytes) or not data:
+        raise RuntimeError("Poof returned an empty image")
+
+    isolated = ImageOps.exif_transpose(Image.open(BytesIO(data))).convert("RGBA")
+    if isolated.size != source.size:
+        raise RuntimeError(
+            "Poof changed the source canvas from "
+            f"{source.size} to {isolated.size}"
+        )
+    if isolated.getchannel("A").getbbox() is None:
+        raise RuntimeError("Poof erased the entire item")
+
+    output = BytesIO()
+    isolated.save(output, format="PNG", optimize=True)
+    processed = output.getvalue()
+    if not processed:
+        raise RuntimeError("Poof returned an empty transparent PNG")
+    logger.info(
+        "poof_background_removed processing_time_ms=%s",
+        getattr(result, "processing_time_ms", None),
+    )
+    return processed
+
+
+def _try_poof_background_removal(contents: bytes) -> bytes | None:
+    """Use Poof while configured/credited, then gracefully fall back locally."""
+    global _poof_disabled_for_process
+
+    settings = get_settings()
+    if not settings.poof_api_key or _poof_disabled_for_process:
+        return None
+    try:
+        return _remove_background_with_poof(contents)
+    except Exception as exc:
+        error_name = type(exc).__name__
+        # Invalid credentials and exhausted credits will not recover during the
+        # same server process. Disabling further calls avoids delaying every
+        # queued upload; a deploy/restart (or new billing period) re-enables it.
+        if error_name in {
+            "AuthError",
+            "AuthenticationError",
+            "AuthorizationError",
+            "PaymentRequiredError",
+            "PermissionDeniedError",
+        }:
+            _poof_disabled_for_process = True
+        logger.warning(
+            "poof_background_removal_failed error_type=%s fallback=local_model "
+            "disabled_for_process=%s",
+            error_name,
+            _poof_disabled_for_process,
+        )
+        return None
 
 
 def put_item_on_white_background(contents: bytes, category: str | None = None) -> bytes:
@@ -92,6 +174,10 @@ def put_item_on_transparent_background(
     contents: bytes, category: str | None = None
 ) -> bytes:
     """Remove the background while preserving the complete source canvas as PNG."""
+    poof_result = _try_poof_background_removal(contents)
+    if poof_result:
+        return poof_result
+
     settings = get_settings()
     category_key = (category or "").strip().casefold()
     use_semantic_mask = category_key not in GENERIC_ACCESSORY_CATEGORIES
