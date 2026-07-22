@@ -113,3 +113,22 @@ def test_positive_item_affinity_can_break_a_close_tie() -> None:
         {"cream-shirt": 1.0, "white-shirt": -1.0},
     )
     assert candidates[0].item_ids[0] == "cream-shirt"
+
+
+def test_candidate_shortlist_contains_distinct_clothing_combinations() -> None:
+    candidates = generate_outfit_candidates(
+        [
+            item("white-shirt", "shirt", color="white"),
+            item("blue-shirt", "shirt", color="blue"),
+            item("navy-pants", "pants", color="navy"),
+            item("cream-pants", "pants", color="cream"),
+            item("shoes", "shoes", color="white"),
+            item("watch", "watch", color="black"),
+        ],
+        "casual everyday look",
+        limit=10,
+    )
+
+    signatures = [candidate.clothing_signature for candidate in candidates]
+    assert len(signatures) == len(set(signatures))
+    assert len(signatures) == 4

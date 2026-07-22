@@ -337,6 +337,11 @@ wardrobe + profile + 3-day wear history
                   |
  deterministic compatibility + score
                   |
+  distinct clothing combinations only
+                  |
+ remove last 5 generated combinations
+      when fresh alternatives exist
+                  |
        top 10 candidates (small JSON)
                   |
        one Groq text ranking request
@@ -359,6 +364,19 @@ Surviving candidates receive a transparent 100-point score: completeness 22%,
 formality coherence 16%, colour harmony 18%, silhouette 13%, texture/fabric 9%,
 style coherence 10%, and occasion/personal fit 12%. Footwear can add a small
 completion bonus.
+Accessory-only variants do not consume multiple shortlist positions: shoes,
+watches and bags cannot make an otherwise identical shirt-and-trouser pairing
+count as a new look. On refresh, the engine reads the five most recently
+generated clothing combinations and excludes exact repeats whenever at least
+one valid alternative exists. If the wardrobe truly has only one compatible
+combination, it safely falls back to that look rather than generating a bad or
+incomplete outfit.
+
+Backend logs make each decision inspectable without exposing image data. The
+three strongest eligible candidates are emitted as `stylist_top_candidate`
+lines containing local score, item names in brackets and the full score
+breakdown. `stylist_chosen` then records the final candidate, source
+(`ai_ranked` or deterministic fallback), names, IDs and score breakdown.
 The AI does **not** select arbitrary wardrobe IDs; it ranks these candidates and
 returns one candidate ID plus the user-facing explanation. The final candidate
 is validated again. An unavailable or malformed AI response falls back to the

@@ -110,6 +110,21 @@ class OutfitCandidate:
     def item_ids(self) -> list[str]:
         return [garment.id for garment in self.garments]
 
+    @property
+    def clothing_signature(self) -> tuple[str, ...]:
+        """Stable identity for the clothes, ignoring reusable accessories.
+
+        Shoes, watches, bags and similar finishing pieces should not make an
+        otherwise identical shirt-and-trouser combination look "new".
+        """
+        return tuple(
+            sorted(
+                garment.id
+                for garment in self.garments
+                if garment.role not in {"accessory", "footwear"}
+            )
+        )
+
     def prompt_payload(self) -> dict[str, Any]:
         return {
             "candidate_id": self.candidate_id,
@@ -443,9 +458,24 @@ def generate_outfit_candidates(
         score, breakdown = _score_candidate(garments_tuple, occasion, profile, item_affinity)
         ranked.append(OutfitCandidate("", garments_tuple, score, breakdown))
     ranked.sort(key=lambda candidate: candidate.score, reverse=True)
+
+    # Preserve only the strongest version of each clothing combination. Before
+    # this, a shirt + trouser base and the same base with shoes/accessories
+    # could consume several candidate slots, leaving the AI with almost no
+    # meaningful variety to choose from.
+    diverse: list[OutfitCandidate] = []
+    seen_clothing: set[tuple[str, ...]] = set()
+    for candidate in ranked:
+        signature = candidate.clothing_signature
+        if signature in seen_clothing:
+            continue
+        seen_clothing.add(signature)
+        diverse.append(candidate)
+        if len(diverse) >= limit:
+            break
     return [
         OutfitCandidate(f"C{index}", candidate.garments, candidate.score, candidate.breakdown)
-        for index, candidate in enumerate(ranked[:limit], start=1)
+        for index, candidate in enumerate(diverse, start=1)
     ]
 
 

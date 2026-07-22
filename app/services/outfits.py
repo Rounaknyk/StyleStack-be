@@ -23,6 +23,7 @@ from app.services.stylist_engine import (
 logger = logging.getLogger("stylestack.outfits")
 
 RECENT_CLOTHING_COOLDOWN = timedelta(days=3)
+RECENT_GENERATED_OUTFIT_LIMIT = 5
 REPEATABLE_ACCESSORY_CATEGORIES = {
     "accessory",
     "accessories",
@@ -339,6 +340,110 @@ def filter_recently_worn_clothing(
     )
 
 
+def _recent_generated_clothing_signatures(
+    client: Any,
+    uid: str,
+    items: list[dict[str, Any]],
+) -> list[tuple[str, ...]]:
+    """Load recently generated clothing combinations for refresh rotation."""
+    try:
+        recent_outfits = (
+            client.table("outfits")
+            .select("id,created_at")
+            .eq("owner_firebase_uid", uid)
+            .order("created_at", desc=True)
+            .limit(RECENT_GENERATED_OUTFIT_LIMIT)
+            .execute()
+            .data
+            or []
+        )
+        outfit_ids = [str(row["id"]) for row in recent_outfits]
+        if not outfit_ids:
+            return []
+        links = (
+            client.table("outfit_items")
+            .select("outfit_id,wardrobe_item_id")
+            .in_("outfit_id", outfit_ids)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:
+        # Rotation is an enhancement. A database/transient failure must not
+        # prevent the user from receiving an otherwise valid outfit.
+        logger.warning(
+            "outfit_rotation_history_unavailable uid=%s error_type=%s",
+            uid,
+            type(exc).__name__,
+        )
+        return []
+
+    items_by_id = {str(item["id"]): item for item in items}
+    linked_ids: dict[str, list[str]] = {outfit_id: [] for outfit_id in outfit_ids}
+    for link in links:
+        linked_ids.setdefault(str(link["outfit_id"]), []).append(
+            str(link["wardrobe_item_id"])
+        )
+
+    signatures: list[tuple[str, ...]] = []
+    for outfit_id in outfit_ids:
+        signature = tuple(
+            sorted(
+                item_id
+                for item_id in linked_ids.get(outfit_id, [])
+                if item_id in items_by_id
+                and not _is_repeatable_accessory(items_by_id[item_id])
+            )
+        )
+        if signature and signature not in signatures:
+            signatures.append(signature)
+    return signatures
+
+
+def rotate_recent_outfit_candidates(
+    candidates: list[OutfitCandidate],
+    recent_signatures: list[tuple[str, ...]],
+    *,
+    limit: int = 10,
+) -> tuple[list[OutfitCandidate], int]:
+    """Exclude exact recent clothing combinations whenever alternatives exist."""
+    recent = set(recent_signatures)
+    fresh = [
+        candidate
+        for candidate in candidates
+        if candidate.clothing_signature not in recent
+    ]
+    selected = fresh if fresh else candidates
+    # Candidate IDs are positional API identifiers, so rebuild them after
+    # filtering to keep the AI prompt and lookup map consistent.
+    reindexed = [
+        OutfitCandidate(
+            f"C{index}", candidate.garments, candidate.score, candidate.breakdown
+        )
+        for index, candidate in enumerate(selected[:limit], start=1)
+    ]
+    return reindexed, len(candidates) - len(fresh)
+
+
+def _log_ranked_candidates(uid: str, candidates: list[OutfitCandidate]) -> None:
+    for rank, candidate in enumerate(candidates[:3], start=1):
+        names = " + ".join(garment.name for garment in candidate.garments)
+        score_details = ", ".join(
+            f"{name}={value:.2f}"
+            for name, value in candidate.breakdown.items()
+        )
+        logger.info(
+            "stylist_top_candidate uid=%s rank=%s candidate=%s score=%.1f "
+            "outfit=[%s] breakdown=[%s]",
+            uid,
+            rank,
+            candidate.candidate_id,
+            candidate.score,
+            names,
+            score_details,
+        )
+
+
 def create_outfit_suggestion(
     uid: str, city: str, occasion: str = "daily"
 ) -> dict[str, Any]:
@@ -421,13 +526,31 @@ def create_outfit_suggestion(
         occasion,
         style_profile,
         item_affinity,
-        limit=10,
+        # Generate extra distinct combinations first so removing recent looks
+        # still leaves the AI a healthy shortlist.
+        limit=20,
     )
     if not outfit_candidates:
         raise ValueError(
             "Your wardrobe does not yet contain a compatible complete look. "
             "Add at least one top and bottom, or a complete one-piece outfit."
         )
+
+    recent_signatures = _recent_generated_clothing_signatures(client, uid, items)
+    outfit_candidates, recently_removed = rotate_recent_outfit_candidates(
+        outfit_candidates,
+        recent_signatures,
+        limit=10,
+    )
+    logger.info(
+        "outfit_rotation_applied uid=%s recent_combinations=%s "
+        "candidates_removed=%s candidates_remaining=%s",
+        uid,
+        len(recent_signatures),
+        recently_removed,
+        len(outfit_candidates),
+    )
+    _log_ranked_candidates(uid, outfit_candidates)
 
     selected_candidate = outfit_candidates[0]
     reasoning = fallback_reasoning(selected_candidate, occasion)
@@ -474,6 +597,24 @@ def create_outfit_suggestion(
         )
 
     selected_ids = selected_candidate.item_ids
+    selected_names = " + ".join(
+        garment.name for garment in selected_candidate.garments
+    )
+    selected_breakdown = ", ".join(
+        f"{name}={value:.2f}"
+        for name, value in selected_candidate.breakdown.items()
+    )
+    logger.info(
+        "stylist_chosen uid=%s source=%s candidate=%s score=%.1f "
+        "outfit=[%s] item_ids=%s breakdown=[%s]",
+        uid,
+        selection_source,
+        selected_candidate.candidate_id,
+        selected_candidate.score,
+        selected_names,
+        selected_ids,
+        selected_breakdown,
+    )
 
     outfit_response = client.table("outfits").insert(
         {
