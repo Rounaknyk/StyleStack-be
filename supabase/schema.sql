@@ -33,10 +33,9 @@ create table if not exists public.profiles (
 );
 
 -- Owner-managed tester access. Add lowercase verified Firebase emails here to
--- bypass subscriptions and/or rewarded ads without publishing a new app.
+-- bypass rewarded ads without publishing a new app.
 create table if not exists public.access_overrides (
     email text primary key check (email = lower(trim(email))),
-    bypass_subscription boolean not null default true,
     bypass_ads boolean not null default true,
     enabled boolean not null default true,
     note text,

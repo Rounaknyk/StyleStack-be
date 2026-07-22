@@ -65,7 +65,6 @@ Run [`202607210001_add_access_overrides.sql`](supabase/migrations/202607210001_a
 insert into public.access_overrides (email, note)
 values ('tester@example.com', 'Closed beta')
 on conflict (email) do update set
-  bypass_subscription = true,
   bypass_ads = true,
   enabled = true;
 
@@ -449,40 +448,15 @@ before it starts can appear without the user pressing Sync. Configure
 running; a sleeping/free web service cannot perform background work while it is
 stopped.
 
-### Ads and subscriptions
+### Ads and tester bypasses
 
-The Flutter app has two rewarded placements: an extra daily outfit after two free refreshes, and the first Google Calendar connection. Active `premium` subscribers and tester overrides bypass ads. A user who dismisses the Calendar ad before earning the reward stays disconnected; SDK initialization, invalid AdMob configuration, network, load, or show failures fail open so an advertising outage never blocks the feature. Analytics records the bypass reason without logging personal data.
+The Flutter app has two rewarded placements: an extra daily outfit after two free refreshes, and the first Google Calendar connection. Tester overrides bypass ads. A user who dismisses the Calendar ad before earning the reward stays disconnected; SDK initialization, invalid AdMob configuration, network, load, or show failures fail open so an advertising outage never blocks the feature. Analytics records the bypass reason without logging personal data.
 
-Subscriptions use RevenueCat with Firebase UID as the App User ID. Configure:
-
-- one RevenueCat entitlement named `premium`;
-- one current/default offering containing the Android and iOS subscription packages;
-- public SDK keys passed at build time as `REVENUECAT_ANDROID_API_KEY` and `REVENUECAT_IOS_API_KEY` Dart defines;
-- the 7-day trial in Google Play Console and App Store Connect. The app does not implement a forgeable local trial timer.
-
-Keep the mandatory paywall disabled until both stores and RevenueCat are ready. Enable it only in configured release builds:
-
-```bash
-flutter build appbundle --release \
-  --dart-define=SUBSCRIPTION_REQUIRED=true \
-  --dart-define=REVENUECAT_ANDROID_API_KEY=goog_your_public_sdk_key
-
-flutter build ipa --release \
-  --dart-define=SUBSCRIPTION_REQUIRED=true \
-  --dart-define=REVENUECAT_IOS_API_KEY=appl_your_public_sdk_key
-```
-
-These are public mobile SDK keys, not RevenueCat secret API keys. Continue passing the existing AdMob app and rewarded-unit Dart defines in the same release command.
-
-Store testing checklist:
-
-1. Google Play: create an auto-renewing subscription and base plan for `com.stylestack.stylestack`; add a new-customer offer with a 7-day free-trial phase. Add license testers and publish the product plus an Internal/Closed Testing build.
-2. App Store Connect: create an auto-renewable subscription in a subscription group for the same bundle ID; add a 1-week free-trial introductory offer and complete agreements/tax/banking metadata. Test with a Sandbox Apple Account or StoreKit configuration.
-3. RevenueCat: add both store apps, import both products, attach them to `premium`, and place packages in the default offering. Configure Play service credentials and the App Store In-App Purchase key.
-4. Build with the public RevenueCat SDK keys and real AdMob app/unit IDs. Verify purchase, cancellation, expiration, restore, account switching, tester bypass, earned reward, dismissal, airplane mode, and intentionally invalid ad-unit behavior.
-5. Production: replace all Google sample AdMob IDs, keep the same product/entitlement identifiers, submit subscription metadata/screenshots, and clearly display trial conversion price and renewal period on the paywall.
-
-The current paywall/ad access decision is client-side. Before making expensive backend endpoints subscriber-only, validate RevenueCat webhooks/customer state on the server as well.
+Run
+[`202607220001_remove_subscription_access.sql`](supabase/migrations/202607220001_remove_subscription_access.sql)
+after the access-override migration if the earlier subscription column was
+created. Subscription support is intentionally deferred and is not part of the
+current app.
 
 ## 4. Deploy to Render
 

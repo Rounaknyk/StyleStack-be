@@ -82,10 +82,9 @@ class CurrentUserResponse(BaseModel):
 
 
 class UserAccessResponse(BaseModel):
-    """Server-controlled access overrides for subscriptions and advertising."""
+    """Server-controlled tester overrides for advertising."""
 
     tester: bool = False
-    bypass_subscription: bool = False
     bypass_ads: bool = False
 
 
@@ -107,7 +106,7 @@ def read_user_access(current_user: CurrentUser) -> UserAccessResponse:
     """Return live tester overrides maintained by the owner in Supabase.
 
     Matching is performed server-side against the verified Firebase email so
-    the mobile app cannot grant itself premium or ad-free access.
+    the mobile app cannot grant itself ad-free access.
     """
     email = str(current_user.get("email") or "").strip().lower()
     if not email or current_user.get("email_verified") is not True:
@@ -117,7 +116,7 @@ def read_user_access(current_user: CurrentUser) -> UserAccessResponse:
         rows = (
             get_supabase_client()
             .table("access_overrides")
-            .select("bypass_subscription,bypass_ads,enabled")
+            .select("bypass_ads,enabled")
             .eq("email", email)
             .limit(1)
             .execute()
@@ -133,7 +132,6 @@ def read_user_access(current_user: CurrentUser) -> UserAccessResponse:
         return UserAccessResponse()
     return UserAccessResponse(
         tester=True,
-        bypass_subscription=bool(rows[0].get("bypass_subscription")),
         bypass_ads=bool(rows[0].get("bypass_ads")),
     )
 
