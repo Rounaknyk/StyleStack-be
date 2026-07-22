@@ -8,11 +8,17 @@ from pydantic import BaseModel, Field
 from app.core.config import get_settings
 from app.core.supabase import get_supabase_client
 from app.models.outfit import WeatherResponse
-from app.prompts.outfit_stylist import build_stylist_prompt
+from app.prompts.outfit_stylist import build_stylist_ranking_prompt
 from app.services.wardrobe import add_signed_image_url
 from app.services.weather import get_current_weather
 from app.services.inspiration import fetch_outfit_inspiration
 from app.services.groq_rate_limit import groq_rate_gate
+from app.services.stylist_engine import (
+    OutfitCandidate,
+    fallback_reasoning,
+    generate_outfit_candidates,
+    validate_candidate,
+)
 
 logger = logging.getLogger("stylestack.outfits")
 
@@ -57,7 +63,7 @@ REPEATABLE_ACCESSORY_CATEGORIES = {
 
 
 class StylingResult(BaseModel):
-    item_ids: list[str] = Field(min_length=1, max_length=6)
+    candidate_id: str = Field(pattern=r"^C[1-9][0-9]*$")
     reasoning: str = Field(min_length=1, max_length=500)
 
 
@@ -70,36 +76,28 @@ def _item_category(item: dict[str, Any]) -> str:
 
 
 def _call_stylist(
-    items: list[dict[str, Any]],
+    candidates: list[OutfitCandidate],
     weather: WeatherResponse,
     occasion: str,
     style_profile: dict[str, Any] | None = None,
+    learned_preferences: dict[str, Any] | None = None,
 ) -> StylingResult:
     settings = get_settings()
     if not settings.groq_api_key:
         raise RuntimeError("GROQ_API_KEY is not configured")
-    compact_items = [
-        {
-            "id": item["id"],
-            "name": item["name"],
-            "category": _item_category(item),
-            "color": item.get("color") or item.get("ai_color"),
-            "season": item.get("season") or item.get("ai_season"),
-            "formality": item.get("formality") or item.get("ai_formality"),
-            "description": item.get("description") or item.get("ai_description"),
-        }
-        for item in items
-    ]
-    prompt = build_stylist_prompt(
-        wardrobe_json=json.dumps(compact_items),
+    prompt = build_stylist_ranking_prompt(
+        candidates_json=json.dumps(
+            [candidate.prompt_payload() for candidate in candidates]
+        ),
         weather_json=weather.model_dump_json(),
         occasion=occasion,
         profile_json=json.dumps(style_profile or {}),
+        learned_preferences_json=json.dumps(learned_preferences or {}),
     )
     response = groq_rate_gate.post(
         headers={"Authorization": f"Bearer {settings.groq_api_key}"},
         payload={
-            "model": settings.groq_vision_model,
+            "model": settings.groq_stylist_model,
             "reasoning_effort": "none",
             "messages": [
                 {
@@ -109,14 +107,116 @@ def _call_stylist(
                 {"role": "user", "content": prompt},
             ],
             "response_format": {"type": "json_object"},
-            "temperature": 0.7,
-            "max_completion_tokens": 400,
+            "temperature": 0.2,
+            "max_completion_tokens": 450,
         },
         timeout=settings.groq_request_timeout_seconds,
     )
     return StylingResult.model_validate_json(
         response.json()["choices"][0]["message"]["content"]
     )
+
+
+FEEDBACK_WEIGHTS = {
+    "worn": 1.0,
+    "liked": 0.75,
+    "refreshed": -0.25,
+    "wore_something_else": -0.8,
+    "disliked": -1.0,
+}
+
+
+def load_item_affinity(
+    client: Any, uid: str
+) -> tuple[dict[str, float], dict[str, Any]]:
+    """Summarize stored feedback locally without spending an AI request."""
+    try:
+        feedback = (
+            client.table("outfit_feedback")
+            .select("outfit_id,signal,created_at")
+            .eq("owner_firebase_uid", uid)
+            .order("created_at", desc=True)
+            .limit(100)
+            .execute()
+            .data
+            or []
+        )
+        outfit_ids = list({str(row["outfit_id"]) for row in feedback})
+        if not outfit_ids:
+            return {}, {"signals_seen": 0}
+        links = (
+            client.table("outfit_items")
+            .select("outfit_id,wardrobe_item_id")
+            .in_("outfit_id", outfit_ids)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:
+        # The migration may not have been applied yet. Suggestions must remain
+        # usable, so learning degrades safely to a neutral profile.
+        logger.warning(
+            "outfit_feedback_unavailable error_type=%s", type(exc).__name__
+        )
+        return {}, {"signals_seen": 0}
+
+    weights_by_outfit: dict[str, float] = {}
+    for row in feedback:
+        outfit_id = str(row["outfit_id"])
+        weights_by_outfit[outfit_id] = max(
+            -1.0,
+            min(
+                1.0,
+                weights_by_outfit.get(outfit_id, 0.0)
+                + FEEDBACK_WEIGHTS.get(str(row.get("signal")), 0.0),
+            ),
+        )
+    affinity: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for link in links:
+        item_id = str(link["wardrobe_item_id"])
+        affinity[item_id] = affinity.get(item_id, 0.0) + weights_by_outfit.get(
+            str(link["outfit_id"]), 0.0
+        )
+        counts[item_id] = counts.get(item_id, 0) + 1
+    for item_id, total in list(affinity.items()):
+        affinity[item_id] = max(-1.0, min(1.0, total / counts[item_id]))
+    positives = sum(
+        1
+        for row in feedback
+        if FEEDBACK_WEIGHTS.get(str(row.get("signal")), 0) > 0
+    )
+    negatives = len(feedback) - positives
+    return affinity, {
+        "signals_seen": len(feedback),
+        "positive_signals": positives,
+        "negative_signals": negatives,
+    }
+
+
+def record_outfit_feedback(
+    client: Any,
+    uid: str,
+    outfit_id: str,
+    signal: str,
+    reason: str | None = None,
+) -> None:
+    if signal not in FEEDBACK_WEIGHTS:
+        raise ValueError("Unsupported outfit feedback signal")
+    if signal in {"liked", "disliked"}:
+        opposite = "disliked" if signal == "liked" else "liked"
+        client.table("outfit_feedback").delete().eq(
+            "owner_firebase_uid", uid
+        ).eq("outfit_id", outfit_id).eq("signal", opposite).execute()
+    client.table("outfit_feedback").upsert(
+        {
+            "owner_firebase_uid": uid,
+            "outfit_id": outfit_id,
+            "signal": signal,
+            "reason": reason,
+        },
+        on_conflict="owner_firebase_uid,outfit_id,signal",
+    ).execute()
 
 
 def _age_group(date_of_birth: str | None, today: date | None = None) -> str | None:
@@ -315,17 +415,71 @@ def create_outfit_suggestion(
     style_profile = build_personal_style_context(
         profile_rows[0] if profile_rows else None
     )
-    styling = _call_stylist(candidates, weather, occasion, style_profile)
-    valid_ids = {str(item["id"]) for item in candidates}
-    selected_ids = list(dict.fromkeys(i for i in styling.item_ids if i in valid_ids))
-    if not selected_ids:
-        raise RuntimeError("Stylist returned no valid wardrobe item IDs")
+    item_affinity, learned_preferences = load_item_affinity(client, uid)
+    outfit_candidates = generate_outfit_candidates(
+        candidates,
+        occasion,
+        style_profile,
+        item_affinity,
+        limit=10,
+    )
+    if not outfit_candidates:
+        raise ValueError(
+            "Your wardrobe does not yet contain a compatible complete look. "
+            "Add at least one top and bottom, or a complete one-piece outfit."
+        )
+
+    selected_candidate = outfit_candidates[0]
+    reasoning = fallback_reasoning(selected_candidate, occasion)
+    selection_source = "deterministic_fallback"
+    try:
+        styling = _call_stylist(
+            outfit_candidates,
+            weather,
+            occasion,
+            style_profile,
+            learned_preferences,
+        )
+        by_candidate_id = {
+            candidate.candidate_id: candidate for candidate in outfit_candidates
+        }
+        ranked_choice = by_candidate_id.get(styling.candidate_id)
+        if ranked_choice is not None:
+            valid, rejection_reason = validate_candidate(ranked_choice.garments)
+            if valid:
+                selected_candidate = ranked_choice
+                reasoning = styling.reasoning
+                selection_source = "ai_ranked"
+            else:
+                logger.warning(
+                    "stylist_final_validation_failed uid=%s candidate=%s reason=%s",
+                    uid,
+                    styling.candidate_id,
+                    rejection_reason,
+                )
+        else:
+            logger.warning(
+                "stylist_unknown_candidate uid=%s candidate=%s",
+                uid,
+                styling.candidate_id,
+            )
+    except Exception as exc:
+        # Candidate generation is deterministic, so a provider outage should
+        # reduce creative ranking quality rather than break Today's Outfit.
+        logger.warning(
+            "stylist_ai_ranking_unavailable uid=%s error_type=%s fallback=%s",
+            uid,
+            type(exc).__name__,
+            selected_candidate.candidate_id,
+        )
+
+    selected_ids = selected_candidate.item_ids
 
     outfit_response = client.table("outfits").insert(
         {
             "owner_firebase_uid": uid,
             "occasion": occasion,
-            "reasoning": styling.reasoning,
+            "reasoning": reasoning,
             "weather": weather.model_dump(),
         }
     ).execute()
@@ -347,7 +501,15 @@ def create_outfit_suggestion(
     outfit["inspiration_images"] = fetch_outfit_inspiration(
         selected, occasion, style_profile
     )
-    logger.info("outfit_created uid=%s outfit_id=%s items=%s", uid, outfit["id"], len(selected_ids))
+    logger.info(
+        "outfit_created uid=%s outfit_id=%s items=%s source=%s candidate=%s local_score=%.1f",
+        uid,
+        outfit["id"],
+        len(selected_ids),
+        selection_source,
+        selected_candidate.candidate_id,
+        selected_candidate.score,
+    )
     return outfit
 
 

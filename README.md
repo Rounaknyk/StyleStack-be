@@ -323,11 +323,72 @@ a durable database queue before running multiple API instances.
 
 ### Weather-aware outfit API
 
+#### Professional Stylist Engine
+
+Today's Outfit and Ask Your Stylist use a hybrid engine so basic dressing
+sense is enforced in code instead of delegated to a single generative prompt:
+
+```text
+wardrobe + profile + 3-day wear history
+                  |
+          normalize garment roles
+                  |
+      build valid outfit formulas only
+                  |
+ deterministic compatibility + score
+                  |
+       top 10 candidates (small JSON)
+                  |
+       one Groq text ranking request
+                  |
+      final validation -> saved outfit
+                  |
+     deterministic fallback if AI fails
+```
+
+Normalization derives role/type, subtype, colour, pattern, fabric, texture,
+fit/silhouette, formality, season, style language, audience/neutrality and
+Indian/western context from existing wardrobe metadata and AI tags.
+The formula layer supports top + bottom, one-piece looks, optional footwear and
+accessories, formal layering, kurta + salwar/dhoti/churidar, and saree/lehenga
++ blouse combinations. Hard gates reject incomplete looks, duplicate primary
+roles, severe formality conflicts, uncontrolled pattern clashes, and arbitrary
+sporty/formal or ethnic/western mixing.
+
+Surviving candidates receive a transparent 100-point score: completeness 22%,
+formality coherence 16%, colour harmony 18%, silhouette 13%, texture/fabric 9%,
+style coherence 10%, and occasion/personal fit 12%. Footwear can add a small
+completion bonus.
+The AI does **not** select arbitrary wardrobe IDs; it ranks these candidates and
+returns one candidate ID plus the user-facing explanation. The final candidate
+is validated again. An unavailable or malformed AI response falls back to the
+highest local score, so outfit generation remains usable and costs at most one
+stylist AI call.
+
+The learning loop stores `worn`, `liked`, `refreshed`, `disliked`, and
+`wore_something_else` signals. Recent signals become small per-item affinity
+adjustments during local scoring, without another AI call. The existing Log
+this outfit action records `worn`; refreshing records `refreshed`; logging an
+alternate look records `wore_something_else`. Apply the idempotent migration
+[`202607220002_add_outfit_feedback.sql`](supabase/migrations/202607220002_add_outfit_feedback.sql)
+before deploying this engine.
+
+```text
+POST /api/v1/outfits/{outfit_id}/feedback
+{"signal":"liked","reason":"Optional short note"}
+```
+
+Use `GROQ_STYLIST_MODEL` to change only the text ranking model independently of
+the vision auto-tagger. No external benchmark suite is included in the MVP;
+the deterministic rules and focused regression tests are the current safety
+baseline and should later be calibrated against anonymized real user choices.
+
 Set these values in `.env`:
 
 ```env
 OPENWEATHER_API_KEY=your-openweather-api-key
 OPENWEATHER_BASE_URL=https://api.openweathermap.org/data/2.5
+GROQ_STYLIST_MODEL=qwen/qwen3.6-27b
 PEXELS_API_KEY=your-pexels-api-key
 PEXELS_BASE_URL=https://api.pexels.com/v1
 PEXELS_REQUEST_TIMEOUT_SECONDS=8

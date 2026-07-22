@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 
-from app.prompts.outfit_stylist import build_stylist_prompt
+from app.prompts.outfit_stylist import build_stylist_prompt, build_stylist_ranking_prompt
 from app.services.outfits import _age_group, build_personal_style_context
 
 
@@ -49,6 +49,17 @@ class OutfitPersonalizationTests(unittest.TestCase):
         self.assertIn("PERSONAL_STYLE_PROFILE", prompt)
         self.assertIn('"formal"', prompt)
         self.assertIn("Treat PERSONAL_STYLE_PROFILE as preference context", prompt)
+
+    def test_ranking_prompt_requires_an_existing_candidate(self) -> None:
+        prompt = build_stylist_ranking_prompt(
+            candidates_json='[{"candidate_id":"C1"}]',
+            weather_json="{}",
+            occasion="interview",
+            profile_json='{"preferred_styles":["formal"]}',
+        )
+        self.assertIn("select the strongest candidate", prompt)
+        self.assertIn('"candidate_id":"C1"', prompt)
+        self.assertIn("Never invent an ID or item", prompt)
 
 
 if __name__ == "__main__":

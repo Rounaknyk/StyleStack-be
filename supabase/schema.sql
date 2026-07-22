@@ -267,6 +267,18 @@ create table if not exists public.outfit_items (
     primary key (outfit_id, wardrobe_item_id)
 );
 
+create table if not exists public.outfit_feedback (
+    id uuid primary key default gen_random_uuid(),
+    owner_firebase_uid text not null references public.profiles(firebase_uid) on delete cascade,
+    outfit_id uuid not null references public.outfits(id) on delete cascade,
+    signal text not null check (
+        signal in ('worn', 'liked', 'refreshed', 'wore_something_else', 'disliked')
+    ),
+    reason text,
+    created_at timestamptz not null default now(),
+    unique (owner_firebase_uid, outfit_id, signal)
+);
+
 create table if not exists public.canvas_styles (
     id uuid primary key default gen_random_uuid(),
     owner_firebase_uid text not null references public.profiles(firebase_uid) on delete cascade,
@@ -371,6 +383,8 @@ create index if not exists wear_logs_item_worn_at_idx
     on public.wear_logs (wardrobe_item_id, worn_at desc);
 create index if not exists outfits_owner_created_idx
     on public.outfits (owner_firebase_uid, created_at desc);
+create index if not exists outfit_feedback_owner_created_idx
+    on public.outfit_feedback (owner_firebase_uid, created_at desc);
 create index if not exists canvas_styles_owner_created_idx
     on public.canvas_styles (owner_firebase_uid, created_at desc);
 create index if not exists device_tokens_owner_idx
@@ -429,6 +443,7 @@ alter table public.wardrobe_items enable row level security;
 alter table public.wear_logs enable row level security;
 alter table public.outfits enable row level security;
 alter table public.outfit_items enable row level security;
+alter table public.outfit_feedback enable row level security;
 alter table public.canvas_styles enable row level security;
 drop policy if exists canvas_styles_backend_only on public.canvas_styles;
 create policy canvas_styles_backend_only on public.canvas_styles

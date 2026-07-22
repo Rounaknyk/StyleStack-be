@@ -8,8 +8,18 @@ from app.core.supabase import get_supabase_client
 from app.dependencies.auth import CurrentUser
 from pydantic import BaseModel, Field
 
-from app.models.outfit import OutfitResponse, OutfitSuggestionRequest, OutfitWearResponse
-from app.services.outfits import create_outfit_suggestion, get_outfit
+from app.models.outfit import (
+    OutfitFeedbackRequest,
+    OutfitFeedbackResponse,
+    OutfitResponse,
+    OutfitSuggestionRequest,
+    OutfitWearResponse,
+)
+from app.services.outfits import (
+    create_outfit_suggestion,
+    get_outfit,
+    record_outfit_feedback,
+)
 from app.services.occasion import today_occasion
 
 router = APIRouter()
@@ -118,4 +128,56 @@ def wear_outfit(outfit_id: UUID, current_user: CurrentUser):
     ]
     if rows:
         client.table("wear_logs").insert(rows).execute()
+    try:
+        record_outfit_feedback(
+            client, current_user["uid"], str(outfit_id), "worn"
+        )
+    except Exception as exc:
+        # Wear history is the source of truth; learning is additive and must
+        # not make the user's logging action fail.
+        logger.warning(
+            "outfit_worn_feedback_failed uid=%s outfit_id=%s error_type=%s",
+            current_user["uid"],
+            outfit_id,
+            type(exc).__name__,
+        )
     return OutfitWearResponse(outfit_id=outfit_id, logged_items=len(rows))
+
+
+@router.post("/{outfit_id}/feedback", response_model=OutfitFeedbackResponse)
+def save_outfit_feedback(
+    outfit_id: UUID,
+    payload: OutfitFeedbackRequest,
+    current_user: CurrentUser,
+):
+    client = get_supabase_client()
+    owned = (
+        client.table("outfits")
+        .select("id")
+        .eq("id", str(outfit_id))
+        .eq("owner_firebase_uid", current_user["uid"])
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not owned:
+        raise HTTPException(status_code=404, detail="Outfit not found")
+    try:
+        record_outfit_feedback(
+            client,
+            current_user["uid"],
+            str(outfit_id),
+            payload.signal,
+            payload.reason,
+        )
+    except Exception as exc:
+        logger.exception(
+            "outfit_feedback_failed uid=%s outfit_id=%s signal=%s",
+            current_user["uid"],
+            outfit_id,
+            payload.signal,
+        )
+        raise HTTPException(
+            status_code=503, detail="Could not save outfit feedback"
+        ) from exc
+    return OutfitFeedbackResponse(outfit_id=outfit_id, signal=payload.signal)

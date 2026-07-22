@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -35,3 +35,19 @@ class OutfitResponse(BaseModel):
 class OutfitWearResponse(BaseModel):
     outfit_id: UUID
     logged_items: int
+
+
+OutfitFeedbackSignal = Literal[
+    "worn", "liked", "refreshed", "wore_something_else", "disliked"
+]
+
+
+class OutfitFeedbackRequest(BaseModel):
+    signal: OutfitFeedbackSignal
+    reason: str | None = Field(default=None, max_length=240)
+
+
+class OutfitFeedbackResponse(BaseModel):
+    outfit_id: UUID
+    signal: OutfitFeedbackSignal
+    saved: bool = True
