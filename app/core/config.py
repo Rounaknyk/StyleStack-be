@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     gemini_vision_model: str = "gemini-flash-latest"
     pexels_api_key: str | None = None
+    # Global operational switch for the optional Pexels moodboard. Keeping
+    # this in environment configuration avoids a database read per outfit.
+    pexels_inspiration_enabled: bool = True
     pexels_base_url: str = "https://api.pexels.com/v1"
     pexels_request_timeout_seconds: float = 8.0
     pexels_results_per_request: int = 10

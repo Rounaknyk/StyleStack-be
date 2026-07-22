@@ -74,6 +74,9 @@ def fetch_outfit_inspiration(
 ) -> list[dict[str, Any]]:
     """Fetch optional visual references; never make outfit generation fail."""
     settings = get_settings()
+    if not settings.pexels_inspiration_enabled:
+        logger.info("outfit_inspiration_skipped reason=feature_disabled")
+        return []
     if not settings.pexels_api_key:
         logger.warning("outfit_inspiration_skipped reason=PEXELS_API_KEY_missing")
         return []

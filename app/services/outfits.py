@@ -340,7 +340,13 @@ def create_outfit_suggestion(
     selected = [items_by_id[item_id] for item_id in selected_ids if item_id in items_by_id]
     outfit["item_ids"] = selected_ids
     outfit["items"] = [add_signed_image_url(client, item) for item in selected]
-    outfit["inspiration_images"] = fetch_outfit_inspiration(selected, occasion, style_profile)
+    settings = get_settings()
+    outfit["inspiration_enabled"] = bool(
+        settings.pexels_inspiration_enabled and settings.pexels_api_key
+    )
+    outfit["inspiration_images"] = fetch_outfit_inspiration(
+        selected, occasion, style_profile
+    )
     logger.info("outfit_created uid=%s outfit_id=%s items=%s", uid, outfit["id"], len(selected_ids))
     return outfit
 
@@ -362,4 +368,9 @@ def get_outfit(client: Any, outfit_id: str, uid: str) -> dict[str, Any] | None:
     by_id = {str(item["id"]): add_signed_image_url(client, item) for item in items}
     outfit["item_ids"] = ids
     outfit["items"] = [by_id[item_id] for item_id in ids if item_id in by_id]
+    settings = get_settings()
+    outfit["inspiration_enabled"] = bool(
+        settings.pexels_inspiration_enabled and settings.pexels_api_key
+    )
+    outfit.setdefault("inspiration_images", [])
     return outfit

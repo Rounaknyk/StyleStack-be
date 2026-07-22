@@ -230,6 +230,16 @@ GROQ_VISION_MODEL=qwen/qwen3.6-27b
 GROQ_REQUEST_TIMEOUT_SECONDS=30
 ```
 
+Pexels-powered outfit moodboards are optional and can be hidden globally with
+no database lookup or app update. Set this on the backend and restart/deploy:
+
+```env
+PEXELS_INSPIRATION_ENABLED=false
+```
+
+When disabled, the API returns `inspiration_enabled: false` and the Flutter app
+removes the **See the vibe** action. Existing outfit suggestions are unaffected.
+
 Poll a user-owned item without blocking uploads:
 
 ```bash
