@@ -62,6 +62,25 @@ ACCESSORY_TERMS = {
     "accessory", "watch", "bag", "handbag", "backpack", "belt", "cap", "hat",
     "scarf", "dupatta", "jewellery", "jewelry", "necklace", "bracelet", "sunglasses", "wallet",
 }
+OFFICE_OCCASION_TERMS = {
+    "boardroom", "client", "conference", "corporate", "formal", "interview",
+    "meeting", "office", "presentation", "seminar", "work",
+}
+OFFICE_LAYER_TERMS = {
+    "bandhgala", "blazer", "nehru", "suit", "suit-jacket", "waistcoat",
+}
+CASUAL_OUTERWEAR_TERMS = {
+    "athletic", "bomber", "denim", "hooded", "hoodie", "puffer", "quilted",
+    "rain", "sporty", "streetwear", "windbreaker",
+}
+OFFICE_FOOTWEAR_TERMS = {
+    "brogue", "brogues", "derby", "heel", "heels", "juttis", "loafer",
+    "loafers", "mojari", "monk", "oxford", "oxfords", "pump", "pumps",
+}
+OFFICE_ACCESSORY_TERMS = {
+    "belt", "briefcase", "handbag", "jewellery", "jewelry", "scarf", "tie",
+    "watch",
+}
 ETHNIC_TERMS = {
     "kurta", "saree", "lehenga", "sherwani", "salwar", "dhoti", "dupatta",
     "blouse", "anarkali", "churidar", "mojari", "juttis", "jutti", "ethnic_set",
@@ -312,13 +331,68 @@ def _occasion_target(occasion: str) -> tuple[int, set[str]]:
     tokens = _tokens(occasion)
     if tokens & {"wedding", "reception", "festival", "festive", "diwali", "eid", "navratri", "puja"}:
         return 4, {"ethnic", "formal", "festive", "glam"}
-    if tokens & {"interview", "office", "meeting", "corporate", "work", "formal"}:
+    if tokens & OFFICE_OCCASION_TERMS:
         return 4, {"office", "formal", "classic", "minimal"}
     if tokens & {"gym", "workout", "sport", "running"}:
         return 1, {"sporty"}
     if tokens & {"party", "date", "dinner", "cocktail"}:
         return 3, {"glam", "smart", "contemporary"}
     return 2, {"casual", "minimal", "classic", "streetwear"}
+
+
+def _office_ready_base(garments: tuple[Garment, ...]) -> bool:
+    """Require credible workwear, not merely the highest-scoring casual look."""
+    primary = [
+        garment
+        for garment in garments
+        if garment.role not in {"accessory", "footwear", "layer"}
+    ]
+    if not primary or not any(garment.formality >= 3 for garment in primary):
+        return False
+    for garment in primary:
+        evidence = _tokens(
+            garment.name,
+            garment.category,
+            garment.styles,
+            garment.prompt_details.get("visual_tags"),
+            garment.prompt_details.get("description"),
+        )
+        if evidence & {"sporty", "streetwear", "utility", "joggers", "graphic"}:
+            return False
+    return True
+
+
+def _office_ready_layer(garment: Garment) -> bool:
+    evidence = _tokens(
+        garment.name,
+        garment.category,
+        garment.styles,
+        garment.prompt_details.get("visual_tags"),
+        garment.prompt_details.get("description"),
+    )
+    return bool(evidence & OFFICE_LAYER_TERMS) and not bool(
+        evidence & CASUAL_OUTERWEAR_TERMS
+    )
+
+
+def _office_ready_footwear(garment: Garment) -> bool:
+    evidence = _tokens(
+        garment.name,
+        garment.category,
+        garment.styles,
+        garment.prompt_details.get("visual_tags"),
+    )
+    return garment.formality >= 3 or bool(evidence & OFFICE_FOOTWEAR_TERMS)
+
+
+def _office_ready_accessory(garment: Garment) -> bool:
+    evidence = _tokens(
+        garment.name,
+        garment.category,
+        garment.styles,
+        garment.prompt_details.get("visual_tags"),
+    )
+    return bool(evidence & OFFICE_ACCESSORY_TERMS)
 
 
 def _hard_compatible(first: Garment, second: Garment) -> bool:
@@ -451,18 +525,39 @@ def generate_outfit_candidates(
             bases.extend((one_piece, blouse) for blouse in blouses)
         bases.append((one_piece,))
 
+    target_formality, target_styles = _occasion_target(occasion)
+    office_request = target_formality >= 4 and "office" in target_styles
+    if office_request:
+        bases = [base for base in bases if _office_ready_base(base)]
+
     expanded: list[tuple[Garment, ...]] = []
     for base in bases:
         outfit = base
-        footwear = _best_addition(outfit, roles["footwear"])
+        footwear_choices = roles["footwear"]
+        if office_request:
+            footwear_choices = [
+                item for item in footwear_choices if _office_ready_footwear(item)
+            ]
+        footwear = _best_addition(outfit, footwear_choices)
         if footwear:
             outfit += (footwear,)
-        target_formality, _ = _occasion_target(occasion)
         if target_formality >= 3:
-            layer = _best_addition(outfit, roles["layer"])
+            layer_choices = roles["layer"]
+            if office_request:
+                layer_choices = [
+                    item for item in layer_choices if _office_ready_layer(item)
+                ]
+            layer = _best_addition(outfit, layer_choices)
             if layer:
                 outfit += (layer,)
-        accessory = _best_addition(outfit, roles["accessory"])
+        accessory_choices = roles["accessory"]
+        if office_request:
+            accessory_choices = [
+                item
+                for item in accessory_choices
+                if _office_ready_accessory(item)
+            ]
+        accessory = _best_addition(outfit, accessory_choices)
         if accessory and len(outfit) < 5:
             outfit += (accessory,)
         expanded.append(outfit)

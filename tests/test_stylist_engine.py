@@ -151,3 +151,92 @@ def test_duplicate_rows_do_not_create_fake_outfit_variety() -> None:
         "bottom|pants|white pants|white",
         "top|shirt|grey shirt|grey",
     )
+
+
+def test_presentation_never_uses_casual_jacket_crocs_or_backpack() -> None:
+    candidates = generate_outfit_candidates(
+        [
+            item(
+                "formal-shirt",
+                "shirt",
+                name="Blue formal shirt",
+                color="blue",
+                formality="formal",
+                tags=["classic", "office"],
+            ),
+            item(
+                "white-pants",
+                "pants",
+                name="White pants",
+                color="white",
+                formality="casual",
+            ),
+            item(
+                "cargo-pants",
+                "pants",
+                name="Black cargo pants",
+                color="black",
+                formality="casual",
+                tags=["utility", "streetwear"],
+            ),
+            item(
+                "puffer",
+                "jacket",
+                name="Hooded quilted puffer jacket",
+                formality="casual",
+                tags=["sporty", "bomber"],
+            ),
+            item(
+                "crocs",
+                "shoes",
+                name="Crocs clogs",
+                formality="casual",
+            ),
+            item(
+                "backpack",
+                "accessory",
+                name="Laptop backpack",
+                formality="casual",
+            ),
+        ],
+        "I have an important client presentation",
+    )
+
+    assert candidates
+    for candidate in candidates:
+        assert candidate.item_ids == ["formal-shirt", "white-pants"]
+
+
+def test_formal_request_can_add_actual_blazer_and_loafers() -> None:
+    candidates = generate_outfit_candidates(
+        [
+            item(
+                "formal-shirt",
+                "shirt",
+                formality="formal",
+                tags=["office"],
+            ),
+            item("trousers", "pants", formality="semi-formal"),
+            item(
+                "blazer",
+                "blazer",
+                formality="formal",
+                tags=["office"],
+            ),
+            item(
+                "loafers",
+                "shoes",
+                formality="formal",
+                tags=["loafer"],
+            ),
+        ],
+        "formal presentation",
+    )
+
+    assert candidates
+    assert candidates[0].item_ids == [
+        "formal-shirt",
+        "trousers",
+        "loafers",
+        "blazer",
+    ]

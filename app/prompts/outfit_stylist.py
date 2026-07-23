@@ -97,6 +97,10 @@ combination.
 
 RULES:
 - Select exactly one candidate_id from CANDIDATES. Never invent an ID or item.
+- For interviews, presentations, meetings and other office-formal requests,
+  never describe a generic bomber, puffer, hoodie, rain jacket, casual shoe or
+  backpack as formal. Prefer an intentionally simpler look when the wardrobe
+  lacks a blazer, formal shoe or restrained work accessory.
 - Local scores are a strong prior, but you may choose another candidate when
   the visual description clearly creates a more intentional look.
 - Reject novelty for novelty's sake. A simple coherent outfit beats a random

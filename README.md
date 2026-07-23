@@ -360,6 +360,16 @@ accessories, formal layering, kurta + salwar/dhoti/churidar, and saree/lehenga
 roles, severe formality conflicts, uncontrolled pattern clashes, and arbitrary
 sporty/formal or ethnic/western mixing.
 
+Office intent is recognized from terms such as presentation, interview,
+meeting, conference, client, corporate and boardroom—not only the literal word
+`formal`. These requests pass through an additional credibility gate: the base
+must contain an office-ready top or one-piece; utility/streetwear primary
+pieces are excluded; layers must actually be blazers, suit jackets, waistcoats,
+Nehru jackets or bandhgalas; and footwear/accessories must be suitable for
+work. If the wardrobe lacks those finishing pieces, the engine returns a
+simpler shirt-and-trouser look rather than mislabeling a hoodie, puffer, bomber,
+Crocs or backpack as formal.
+
 Surviving candidates receive a transparent 100-point score: completeness 22%,
 formality coherence 16%, colour harmony 18%, silhouette 13%, texture/fabric 9%,
 style coherence 10%, and occasion/personal fit 12%. Footwear can add a small
