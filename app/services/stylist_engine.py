@@ -125,6 +125,28 @@ class OutfitCandidate:
             )
         )
 
+    @property
+    def style_signature(self) -> tuple[str, ...]:
+        """Human-visible clothing identity used to prevent fake variety.
+
+        Duplicate database rows called "Grey Shirt" should not appear as
+        different refresh results merely because their UUIDs differ.
+        """
+        return tuple(
+            sorted(
+                "|".join(
+                    (
+                        garment.role,
+                        garment.category,
+                        " ".join(garment.name.casefold().split()),
+                        ",".join(garment.colours),
+                    )
+                )
+                for garment in self.garments
+                if garment.role not in {"accessory", "footwear"}
+            )
+        )
+
     def prompt_payload(self) -> dict[str, Any]:
         return {
             "candidate_id": self.candidate_id,
@@ -466,7 +488,7 @@ def generate_outfit_candidates(
     diverse: list[OutfitCandidate] = []
     seen_clothing: set[tuple[str, ...]] = set()
     for candidate in ranked:
-        signature = candidate.clothing_signature
+        signature = candidate.style_signature
         if signature in seen_clothing:
             continue
         seen_clothing.add(signature)

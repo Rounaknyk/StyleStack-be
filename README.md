@@ -337,10 +337,10 @@ wardrobe + profile + 3-day wear history
                   |
  deterministic compatibility + score
                   |
-  distinct clothing combinations only
+  visually distinct clothing combinations only
                   |
- remove last 5 generated combinations
-      when fresh alternatives exist
+ remove recent looks, including the one
+ explicitly supplied by the refresh action
                   |
        top 10 candidates (small JSON)
                   |
@@ -366,16 +366,19 @@ style coherence 10%, and occasion/personal fit 12%. Footwear can add a small
 completion bonus.
 Accessory-only variants do not consume multiple shortlist positions: shoes,
 watches and bags cannot make an otherwise identical shirt-and-trouser pairing
-count as a new look. On refresh, the engine reads the five most recently
-generated clothing combinations and excludes exact repeats whenever at least
-one valid alternative exists. If the wardrobe truly has only one compatible
-combination, it safely falls back to that look rather than generating a bad or
-incomplete outfit.
+count as a new look. Duplicate wardrobe rows with the same visible clothing
+identity also collapse into one candidate instead of creating fake variety.
+The refresh action sends its currently displayed outfit ID explicitly. The
+engine combines that outfit with recent generated history and removes those
+semantic clothing combinations before ranking, so an AI provider failure falls
+back to the strongest unseen candidate rather than returning the same C1.
+After every compatible combination has genuinely been exhausted, refresh
+returns a clear message instead of silently repeating an outfit.
 
 Backend logs make each decision inspectable without exposing image data. The
 three strongest eligible candidates are emitted as `stylist_top_candidate`
-lines containing local score, item names in brackets and the full score
-breakdown. `stylist_chosen` then records the final candidate, source
+lines containing local score, item names in brackets, item IDs and the full
+score breakdown. `stylist_chosen` then records the final candidate, source
 (`ai_ranked` or deterministic fallback), names, IDs and score breakdown.
 The AI does **not** select arbitrary wardrobe IDs; it ranks these candidates and
 returns one candidate ID plus the user-facing explanation. The final candidate

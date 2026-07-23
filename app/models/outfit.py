@@ -9,6 +9,8 @@ class OutfitSuggestionRequest(BaseModel):
     city: str | None = Field(default=None, min_length=2, max_length=120)
     occasion: str = Field(default="daily", min_length=2, max_length=80)
     calendar_event_id: UUID | None = None
+    refresh: bool = False
+    previous_outfit_id: UUID | None = None
 
 
 class WeatherResponse(BaseModel):

@@ -73,12 +73,12 @@ def test_refresh_rotation_excludes_recent_clothing_but_not_accessory_variants() 
         "casual everyday look",
         limit=10,
     )
-    recent = [candidates[0].clothing_signature]
+    recent = [candidates[0].style_signature]
 
     rotated, removed = rotate_recent_outfit_candidates(candidates, recent)
 
     assert removed == 1
-    assert rotated[0].clothing_signature != recent[0]
+    assert rotated[0].style_signature != recent[0]
     assert [candidate.candidate_id for candidate in rotated] == [
         f"C{index}" for index in range(1, len(rotated) + 1)
     ]
@@ -94,8 +94,8 @@ def test_rotation_falls_back_when_every_valid_combination_was_recent() -> None:
     )
 
     rotated, removed = rotate_recent_outfit_candidates(
-        candidates, [candidates[0].clothing_signature]
+        candidates, [candidates[0].style_signature]
     )
 
     assert removed == len(candidates)
-    assert rotated[0].clothing_signature == candidates[0].clothing_signature
+    assert rotated[0].style_signature == candidates[0].style_signature

@@ -129,6 +129,25 @@ def test_candidate_shortlist_contains_distinct_clothing_combinations() -> None:
         limit=10,
     )
 
-    signatures = [candidate.clothing_signature for candidate in candidates]
+    signatures = [candidate.style_signature for candidate in candidates]
     assert len(signatures) == len(set(signatures))
     assert len(signatures) == 4
+
+
+def test_duplicate_rows_do_not_create_fake_outfit_variety() -> None:
+    candidates = generate_outfit_candidates(
+        [
+            item("grey-shirt-1", "shirt", name="Grey Shirt", color="grey"),
+            item("grey-shirt-2", "shirt", name="Grey Shirt", color="grey"),
+            item("white-pants-1", "pants", name="White Pants", color="white"),
+            item("white-pants-2", "pants", name="White Pants", color="white"),
+        ],
+        "casual everyday look",
+        limit=10,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].style_signature == (
+        "bottom|pants|white pants|white",
+        "top|shirt|grey shirt|grey",
+    )

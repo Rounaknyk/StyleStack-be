@@ -17,6 +17,7 @@ from app.services.stylist_engine import (
     OutfitCandidate,
     fallback_reasoning,
     generate_outfit_candidates,
+    normalize_garment,
     validate_candidate,
 )
 
@@ -344,6 +345,7 @@ def _recent_generated_clothing_signatures(
     client: Any,
     uid: str,
     items: list[dict[str, Any]],
+    previous_outfit_id: str | None = None,
 ) -> list[tuple[str, ...]]:
     """Load recently generated clothing combinations for refresh rotation."""
     try:
@@ -358,6 +360,19 @@ def _recent_generated_clothing_signatures(
             or []
         )
         outfit_ids = [str(row["id"]) for row in recent_outfits]
+        if previous_outfit_id and previous_outfit_id not in outfit_ids:
+            owned_previous = (
+                client.table("outfits")
+                .select("id")
+                .eq("id", previous_outfit_id)
+                .eq("owner_firebase_uid", uid)
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+            if owned_previous:
+                outfit_ids.insert(0, previous_outfit_id)
         if not outfit_ids:
             return []
         links = (
@@ -387,12 +402,23 @@ def _recent_generated_clothing_signatures(
 
     signatures: list[tuple[str, ...]] = []
     for outfit_id in outfit_ids:
+        garments = [
+            normalize_garment(items_by_id[item_id])
+            for item_id in linked_ids.get(outfit_id, [])
+            if item_id in items_by_id
+            and not _is_repeatable_accessory(items_by_id[item_id])
+        ]
         signature = tuple(
             sorted(
-                item_id
-                for item_id in linked_ids.get(outfit_id, [])
-                if item_id in items_by_id
-                and not _is_repeatable_accessory(items_by_id[item_id])
+                "|".join(
+                    (
+                        garment.role,
+                        garment.category,
+                        " ".join(garment.name.casefold().split()),
+                        ",".join(garment.colours),
+                    )
+                )
+                for garment in garments
             )
         )
         if signature and signature not in signatures:
@@ -411,7 +437,7 @@ def rotate_recent_outfit_candidates(
     fresh = [
         candidate
         for candidate in candidates
-        if candidate.clothing_signature not in recent
+        if candidate.style_signature not in recent
     ]
     selected = fresh if fresh else candidates
     # Candidate IDs are positional API identifiers, so rebuild them after
@@ -434,18 +460,24 @@ def _log_ranked_candidates(uid: str, candidates: list[OutfitCandidate]) -> None:
         )
         logger.info(
             "stylist_top_candidate uid=%s rank=%s candidate=%s score=%.1f "
-            "outfit=[%s] breakdown=[%s]",
+            "outfit=[%s] item_ids=%s breakdown=[%s]",
             uid,
             rank,
             candidate.candidate_id,
             candidate.score,
             names,
+            candidate.item_ids,
             score_details,
         )
 
 
 def create_outfit_suggestion(
-    uid: str, city: str, occasion: str = "daily"
+    uid: str,
+    city: str,
+    occasion: str = "daily",
+    *,
+    refresh_requested: bool = False,
+    previous_outfit_id: str | None = None,
 ) -> dict[str, Any]:
     client = get_supabase_client()
     try:
@@ -536,16 +568,29 @@ def create_outfit_suggestion(
             "Add at least one top and bottom, or a complete one-piece outfit."
         )
 
-    recent_signatures = _recent_generated_clothing_signatures(client, uid, items)
+    recent_signatures = _recent_generated_clothing_signatures(
+        client,
+        uid,
+        items,
+        previous_outfit_id,
+    )
+    generated_candidate_count = len(outfit_candidates)
     outfit_candidates, recently_removed = rotate_recent_outfit_candidates(
         outfit_candidates,
         recent_signatures,
         limit=10,
     )
+    if refresh_requested and recently_removed == generated_candidate_count:
+        raise ValueError(
+            "You have already seen every compatible recent look. Try again "
+            "after adding another piece or changing the occasion."
+        )
     logger.info(
-        "outfit_rotation_applied uid=%s recent_combinations=%s "
-        "candidates_removed=%s candidates_remaining=%s",
+        "outfit_rotation_applied uid=%s refresh_requested=%s previous_outfit_id=%s "
+        "recent_combinations=%s candidates_removed=%s candidates_remaining=%s",
         uid,
+        refresh_requested,
+        previous_outfit_id or "none",
         len(recent_signatures),
         recently_removed,
         len(outfit_candidates),

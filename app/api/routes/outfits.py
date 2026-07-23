@@ -52,7 +52,17 @@ def suggest_outfit(payload: OutfitSuggestionRequest, current_user: CurrentUser):
     if occasion.strip().lower() in {"daily", "today"}:
         occasion = today_occasion() or "casual everyday look"
     try:
-        outfit = create_outfit_suggestion(current_user["uid"], city, occasion)
+        outfit = create_outfit_suggestion(
+            current_user["uid"],
+            city,
+            occasion,
+            refresh_requested=payload.refresh,
+            previous_outfit_id=(
+                str(payload.previous_outfit_id)
+                if payload.previous_outfit_id is not None
+                else None
+            ),
+        )
         if payload.calendar_event_id:
             client.table("calendar_events").update(
                 {"outfit_id": str(outfit["id"])}
