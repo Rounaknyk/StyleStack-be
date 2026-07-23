@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from app.services.outfits import (
+    _is_repeatable_accessory,
     filter_recently_worn_clothing,
     rotate_recent_outfit_candidates,
 )
@@ -99,3 +100,26 @@ def test_rotation_falls_back_when_every_valid_combination_was_recent() -> None:
 
     assert removed == len(candidates)
     assert rotated[0].style_signature == candidates[0].style_signature
+
+
+def test_clothing_description_cannot_turn_shirt_into_accessory() -> None:
+    shirt = {
+        "id": "graphic-shirt",
+        "category": "shirt",
+        "name": "Black graphic shirt",
+        "ai_description": (
+            "A cartoon character wearing sunglasses is printed on this T-shirt."
+        ),
+    }
+
+    assert _is_repeatable_accessory(shirt) is False
+
+
+def test_unknown_category_can_still_use_descriptive_accessory_fallback() -> None:
+    sunglasses = {
+        "id": "unknown-sunglasses",
+        "category": "other",
+        "name": "Black sunglasses",
+    }
+
+    assert _is_repeatable_accessory(sunglasses) is True

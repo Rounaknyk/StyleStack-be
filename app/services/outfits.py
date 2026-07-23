@@ -3,6 +3,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+import httpx
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
@@ -277,6 +278,12 @@ def _is_repeatable_accessory(item: dict[str, Any]) -> bool:
     category = _item_category(item).casefold()
     if category in REPEATABLE_ACCESSORY_CATEGORIES:
         return True
+    # A known clothing category is authoritative. Descriptions can mention an
+    # accessory as part of a print (for example, a T-shirt graphic depicting a
+    # character wearing sunglasses); that must not turn the garment itself
+    # into a repeatable accessory.
+    if category not in {"", "other", "unknown"}:
+        return False
     descriptive_text = " ".join(
         str(item.get(field) or "")
         for field in ("name", "subcategory", "ai_description")
@@ -634,10 +641,22 @@ def create_outfit_suggestion(
     except Exception as exc:
         # Candidate generation is deterministic, so a provider outage should
         # reduce creative ranking quality rather than break Today's Outfit.
+        response = exc.response if isinstance(exc, httpx.HTTPStatusError) else None
+        response_summary = (
+            " ".join(response.text.split())[:300]
+            if response is not None
+            else "unavailable"
+        )
         logger.warning(
-            "stylist_ai_ranking_unavailable uid=%s error_type=%s fallback=%s",
+            "stylist_ai_ranking_unavailable uid=%s error_type=%s "
+            "status_code=%s retry_after=%s response=%r fallback=%s",
             uid,
             type(exc).__name__,
+            response.status_code if response is not None else "none",
+            response.headers.get("retry-after", "none")
+            if response is not None
+            else "none",
+            response_summary,
             selected_candidate.candidate_id,
         )
 
