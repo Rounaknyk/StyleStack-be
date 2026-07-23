@@ -56,10 +56,12 @@ class OutfitPersonalizationTests(unittest.TestCase):
             weather_json="{}",
             occasion="interview",
             profile_json='{"preferred_styles":["formal"]}',
+            dress_code_json='{"dress_code":"business_formal"}',
         )
         self.assertIn("select the strongest candidate", prompt)
         self.assertIn('"candidate_id":"C1"', prompt)
         self.assertIn("Never invent an ID or item", prompt)
+        self.assertIn('"business_formal"', prompt)
 
 
 if __name__ == "__main__":

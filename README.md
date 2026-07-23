@@ -353,27 +353,32 @@ wardrobe + profile + 3-day wear history
 
 Normalization derives role/type, subtype, colour, pattern, fabric, texture,
 fit/silhouette, formality, season, style language, audience/neutrality and
-Indian/western context from existing wardrobe metadata and AI tags.
+Indian/western context from existing wardrobe metadata and AI tags. A local
+dress-code interpreter converts natural requests into reusable social contexts:
+business formal, business casual, polished social, party, celebration, active,
+outdoor, travel, campus or everyday casual. This costs no extra AI call and
+lets phrases such as “investor pitch”, “dinner date” and “workout” carry their
+normal dressing expectations without requiring users to name the dress code.
 The formula layer supports top + bottom, one-piece looks, optional footwear and
 accessories, formal layering, kurta + salwar/dhoti/churidar, and saree/lehenga
 + blouse combinations. Hard gates reject incomplete looks, duplicate primary
 roles, severe formality conflicts, uncontrolled pattern clashes, and arbitrary
 sporty/formal or ethnic/western mixing.
 
-Office intent is recognized from terms such as presentation, interview,
-meeting, conference, client, corporate and boardroom—not only the literal word
-`formal`. These requests pass through an additional credibility gate: the base
-must contain an office-ready top or one-piece; utility/streetwear primary
-pieces are excluded; layers must actually be blazers, suit jackets, waistcoats,
-Nehru jackets or bandhgalas; and footwear/accessories must be suitable for
-work. If the wardrobe lacks those finishing pieces, the engine returns a
-simpler shirt-and-trouser look rather than mislabeling a hoodie, puffer, bomber,
-Crocs or backpack as formal.
+Each context scores garment archetype suitability as well as raw formality.
+Broad labels are never treated as proof: a `jacket` must have blazer/suit/Nehru
+evidence before it can finish a business-formal look, just as generic `shoes`
+are not assumed to be formal. Professional requests exclude utility/streetwear
+primary pieces and unsuitable layers, footwear and bags. Active and outdoor
+requests require functional evidence; festive contexts reward coherent ethnic
+or occasion pieces. If the wardrobe lacks a credible finishing piece, the
+engine returns a simpler complete look instead of inventing polish in its
+explanation.
 
-Surviving candidates receive a transparent 100-point score: completeness 22%,
-formality coherence 16%, colour harmony 18%, silhouette 13%, texture/fabric 9%,
-style coherence 10%, and occasion/personal fit 12%. Footwear can add a small
-completion bonus.
+Surviving candidates receive a transparent 100-point score: completeness 18%,
+formality coherence 14%, colour harmony 17%, silhouette 13%, texture/fabric 8%,
+style coherence 10%, explicit dress-code suitability 14%, and
+occasion/personal fit 6%. Footwear can add a small completion bonus.
 Accessory-only variants do not consume multiple shortlist positions: shoes,
 watches and bags cannot make an otherwise identical shirt-and-trouser pairing
 count as a new look. Duplicate wardrobe rows with the same visible clothing

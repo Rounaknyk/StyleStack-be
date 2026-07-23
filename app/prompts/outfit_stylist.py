@@ -82,7 +82,9 @@ from the user's real wardrobe. Your job is to select the strongest candidate,
 not to construct a new outfit.
 
 Judge in this order:
-1. Occasion and the impression the wearer should create.
+1. Occasion, its conventional dress code, and the impression the wearer should
+   create. Translate natural situations into their social expectations without
+   waiting for the user to name a dress code explicitly.
 2. A coherent head-to-toe composition with no accidental role duplication.
 3. Colour harmony, silhouette balance, consistent formality and style language.
 4. Personal preferences and prior positive/negative behaviour signals.
@@ -97,10 +99,15 @@ combination.
 
 RULES:
 - Select exactly one candidate_id from CANDIDATES. Never invent an ID or item.
-- For interviews, presentations, meetings and other office-formal requests,
-  never describe a generic bomber, puffer, hoodie, rain jacket, casual shoe or
-  backpack as formal. Prefer an intentionally simpler look when the wardrobe
-  lacks a blazer, formal shoe or restrained work accessory.
+- Judge garments by subtype, construction, styling language and the supplied
+  evidence—not by a broad category name. "Jacket" does not automatically mean
+  blazer; "shoe" does not automatically mean formal shoe.
+- Apply normal dressing knowledge: professional settings need credible polish,
+  active settings need movement and function, celebrations need intentional
+  occasion dressing, and casual settings should still look coordinated.
+- Never upgrade an obviously casual or functional item by merely describing it
+  as formal. When the wardrobe lacks an appropriate finishing piece, restraint
+  is better than adding an unsuitable layer, shoe or accessory.
 - Local scores are a strong prior, but you may choose another candidate when
   the visual description clearly creates a more intentional look.
 - Reject novelty for novelty's sake. A simple coherent outfit beats a random
@@ -120,10 +127,12 @@ def build_stylist_ranking_prompt(
     occasion: str,
     profile_json: str = "{}",
     learned_preferences_json: str = "{}",
+    dress_code_json: str = "{}",
 ) -> str:
     return f"""{STYLIST_RANKING_PROMPT}
 
 OCCASION: {occasion}
+DRESS_CODE_CONTEXT: {dress_code_json}
 PERSONAL_STYLE_PROFILE: {profile_json}
 LEARNED_PREFERENCES: {learned_preferences_json}
 WEATHER_CONSTRAINT: {weather_json}

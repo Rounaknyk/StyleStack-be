@@ -62,10 +62,6 @@ ACCESSORY_TERMS = {
     "accessory", "watch", "bag", "handbag", "backpack", "belt", "cap", "hat",
     "scarf", "dupatta", "jewellery", "jewelry", "necklace", "bracelet", "sunglasses", "wallet",
 }
-OFFICE_OCCASION_TERMS = {
-    "boardroom", "client", "conference", "corporate", "formal", "interview",
-    "meeting", "office", "presentation", "seminar", "work",
-}
 OFFICE_LAYER_TERMS = {
     "bandhgala", "blazer", "nehru", "suit", "suit-jacket", "waistcoat",
 }
@@ -81,10 +77,51 @@ OFFICE_ACCESSORY_TERMS = {
     "belt", "briefcase", "handbag", "jewellery", "jewelry", "scarf", "tie",
     "watch",
 }
+POLISHED_TERMS = {
+    "blazer", "blouse", "brogue", "button-down", "classic", "collared",
+    "derby", "dress", "elegant", "formal", "heel", "loafer", "minimal",
+    "nehru", "office", "oxford", "polished", "pump", "shirt", "smart",
+    "suit", "tailored", "trouser", "trousers", "waistcoat",
+}
+RELAXED_TERMS = {
+    "athleisure", "bomber", "cargo", "clog", "clogs", "crocs", "distressed",
+    "graphic", "hooded", "hoodie", "jogger", "joggers", "puffer", "quilted",
+    "shorts", "slipper", "slippers", "sporty", "streetwear", "sweatshirt",
+    "tee", "tshirt", "utility",
+}
+ACTIVE_TERMS = {
+    "activewear", "athletic", "gym", "jogger", "joggers", "legging",
+    "leggings", "running", "sneaker", "sneakers", "sport", "sporty",
+    "sweatshirt", "track",
+}
+OUTDOOR_TERMS = {
+    "boot", "boots", "cargo", "hiking", "outdoor", "rain", "trek",
+    "utility", "waterproof", "windbreaker",
+}
 ETHNIC_TERMS = {
     "kurta", "saree", "lehenga", "sherwani", "salwar", "dhoti", "dupatta",
     "blouse", "anarkali", "churidar", "mojari", "juttis", "jutti", "ethnic_set",
 }
+
+
+@dataclass(frozen=True)
+class OccasionContext:
+    """Local dress-code interpretation used before any generative AI call."""
+
+    code: str
+    label: str
+    target_formality: int
+    target_styles: frozenset[str]
+    desired_impression: str
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "dress_code": self.code,
+            "label": self.label,
+            "target_formality": self.target_formality,
+            "target_styles": sorted(self.target_styles),
+            "desired_impression": self.desired_impression,
+        }
 
 
 def _tokens(*values: Any) -> set[str]:
@@ -327,17 +364,119 @@ def _texture_score(garments: tuple[Garment, ...]) -> float:
     return 0.58
 
 
-def _occasion_target(occasion: str) -> tuple[int, set[str]]:
+def occasion_context(occasion: str) -> OccasionContext:
+    """Infer a conventional dress code and social intention from free text.
+
+    This is intentionally local and deterministic: normal requests do not need
+    a second AI call merely to understand that a pitch is professional, a
+    workout is active, or a wedding is celebratory.
+    """
     tokens = _tokens(occasion)
-    if tokens & {"wedding", "reception", "festival", "festive", "diwali", "eid", "navratri", "puja"}:
-        return 4, {"ethnic", "formal", "festive", "glam"}
-    if tokens & OFFICE_OCCASION_TERMS:
-        return 4, {"office", "formal", "classic", "minimal"}
+    if tokens & {
+        "wedding", "reception", "sangeet", "mehendi", "engagement",
+        "festival", "festive", "diwali", "eid", "navratri", "puja",
+    }:
+        return OccasionContext(
+            "celebration",
+            "festive or ceremonial",
+            4,
+            frozenset({"ethnic", "formal", "festive", "glam"}),
+            "celebratory, culturally appropriate and intentionally dressed",
+        )
+    if tokens & {
+        "boardroom", "conference", "corporate", "formal", "interview", "pitch",
+        "presentation", "seminar",
+    } or (tokens & {"client"} and tokens & {"meeting", "office", "work"}):
+        return OccasionContext(
+            "business_formal",
+            "business formal",
+            4,
+            frozenset({"office", "formal", "classic", "minimal"}),
+            "credible, composed and professionally authoritative",
+        )
+    if tokens & {"office", "work", "meeting", "coworking"}:
+        return OccasionContext(
+            "business_casual",
+            "business casual",
+            3,
+            frozenset({"office", "smart", "classic", "minimal"}),
+            "polished and capable without looking overdressed",
+        )
     if tokens & {"gym", "workout", "sport", "running"}:
-        return 1, {"sporty"}
-    if tokens & {"party", "date", "dinner", "cocktail"}:
-        return 3, {"glam", "smart", "contemporary"}
-    return 2, {"casual", "minimal", "classic", "streetwear"}
+        return OccasionContext(
+            "active",
+            "active",
+            1,
+            frozenset({"sporty"}),
+            "functional, comfortable and intentionally athletic",
+        )
+    if tokens & {"hike", "hiking", "trek", "trekking", "camp", "outdoor"}:
+        return OccasionContext(
+            "outdoor",
+            "outdoor practical",
+            2,
+            frozenset({"sporty", "utility", "casual"}),
+            "practical, mobile and appropriate for the conditions",
+        )
+    if tokens & {"party", "cocktail", "club", "clubbing"}:
+        return OccasionContext(
+            "party",
+            "party or cocktail",
+            3,
+            frozenset({"glam", "smart", "contemporary"}),
+            "confident, elevated and visually memorable",
+        )
+    if tokens & {"date", "dinner", "brunch"}:
+        return OccasionContext(
+            "social_polished",
+            "polished social",
+            3,
+            frozenset({"smart", "contemporary", "classic"}),
+            "effortless, attractive and considered",
+        )
+    if tokens & {"airport", "flight", "travel", "journey", "roadtrip"}:
+        return OccasionContext(
+            "travel",
+            "travel casual",
+            2,
+            frozenset({"casual", "minimal", "sporty"}),
+            "comfortable, practical and still put together",
+        )
+    if tokens & {"college", "campus", "class", "lecture"}:
+        return OccasionContext(
+            "campus",
+            "campus casual",
+            2,
+            frozenset({"casual", "minimal", "streetwear"}),
+            "relaxed, youthful and intentionally coordinated",
+        )
+    return OccasionContext(
+        "casual",
+        "everyday casual",
+        2,
+        frozenset({"casual", "minimal", "classic", "streetwear"}),
+        "effortless, coherent and deliberately styled",
+    )
+
+
+def occasion_context_payload(occasion: str) -> dict[str, Any]:
+    return occasion_context(occasion).payload()
+
+
+def _occasion_target(occasion: str) -> tuple[int, set[str]]:
+    context = occasion_context(occasion)
+    return context.target_formality, set(context.target_styles)
+
+
+def _garment_evidence(garment: Garment) -> set[str]:
+    return _tokens(
+        garment.name,
+        garment.category,
+        garment.styles,
+        garment.prompt_details.get("visual_tags"),
+        garment.prompt_details.get("description"),
+        garment.prompt_details.get("subcategory"),
+    )
 
 
 def _office_ready_base(garments: tuple[Garment, ...]) -> bool:
@@ -350,49 +489,108 @@ def _office_ready_base(garments: tuple[Garment, ...]) -> bool:
     if not primary or not any(garment.formality >= 3 for garment in primary):
         return False
     for garment in primary:
-        evidence = _tokens(
-            garment.name,
-            garment.category,
-            garment.styles,
-            garment.prompt_details.get("visual_tags"),
-            garment.prompt_details.get("description"),
-        )
+        evidence = _garment_evidence(garment)
         if evidence & {"sporty", "streetwear", "utility", "joggers", "graphic"}:
             return False
     return True
 
 
 def _office_ready_layer(garment: Garment) -> bool:
-    evidence = _tokens(
-        garment.name,
-        garment.category,
-        garment.styles,
-        garment.prompt_details.get("visual_tags"),
-        garment.prompt_details.get("description"),
-    )
+    evidence = _garment_evidence(garment)
     return bool(evidence & OFFICE_LAYER_TERMS) and not bool(
         evidence & CASUAL_OUTERWEAR_TERMS
     )
 
 
 def _office_ready_footwear(garment: Garment) -> bool:
-    evidence = _tokens(
-        garment.name,
-        garment.category,
-        garment.styles,
-        garment.prompt_details.get("visual_tags"),
-    )
+    evidence = _garment_evidence(garment)
     return garment.formality >= 3 or bool(evidence & OFFICE_FOOTWEAR_TERMS)
 
 
 def _office_ready_accessory(garment: Garment) -> bool:
-    evidence = _tokens(
-        garment.name,
-        garment.category,
-        garment.styles,
-        garment.prompt_details.get("visual_tags"),
-    )
+    evidence = _garment_evidence(garment)
     return bool(evidence & OFFICE_ACCESSORY_TERMS)
+
+
+def _dress_code_suitability(
+    garment: Garment,
+    context: OccasionContext,
+) -> float:
+    """Return how naturally an item belongs in the inferred social context."""
+    evidence = _garment_evidence(garment)
+    formality_fit = max(
+        0.0,
+        1 - abs(garment.formality - context.target_formality) / 3,
+    )
+    score = 0.55 + (formality_fit * 0.35)
+    if garment.styles & context.target_styles:
+        score += 0.12
+
+    if context.code == "business_formal":
+        if garment.role == "layer":
+            return 1.0 if _office_ready_layer(garment) else 0.0
+        if garment.role == "footwear":
+            return 0.95 if _office_ready_footwear(garment) else 0.1
+        if garment.role == "accessory":
+            return 0.9 if _office_ready_accessory(garment) else 0.2
+        if evidence & RELAXED_TERMS:
+            return 0.08
+        if evidence & POLISHED_TERMS or garment.formality >= 3:
+            score += 0.15
+    elif context.code == "business_casual":
+        if garment.role == "layer" and evidence & {
+            "hoodie", "puffer", "sporty", "athletic",
+        }:
+            score -= 0.35
+        if evidence & {"clogs", "crocs", "slippers", "gym", "graphic"}:
+            score -= 0.35
+        if evidence & POLISHED_TERMS:
+            score += 0.12
+    elif context.code == "active":
+        if evidence & ACTIVE_TERMS:
+            score += 0.25
+        if evidence & POLISHED_TERMS or garment.ethnic:
+            score -= 0.45
+    elif context.code == "outdoor":
+        if evidence & OUTDOOR_TERMS:
+            score += 0.25
+        if garment.formality >= 3 or garment.ethnic:
+            score -= 0.35
+    elif context.code == "celebration":
+        if garment.ethnic or evidence & {"festive", "glam", "embroidered", "silk"}:
+            score += 0.22
+        if evidence & ACTIVE_TERMS:
+            score -= 0.4
+    elif context.code in {"party", "social_polished"}:
+        if evidence & {"smart", "glam", "contemporary", "elegant", "statement"}:
+            score += 0.18
+        if evidence & {"gym", "running", "slippers"}:
+            score -= 0.4
+    elif context.code == "travel":
+        if evidence & {"comfortable", "casual", "minimal", "sporty"}:
+            score += 0.12
+        if garment.formality >= 4:
+            score -= 0.2
+
+    return max(0.0, min(1.0, score))
+
+
+def _contextually_valid_base(
+    garments: tuple[Garment, ...],
+    context: OccasionContext,
+) -> bool:
+    if context.code == "business_formal":
+        return _office_ready_base(garments)
+    primary = [
+        garment
+        for garment in garments
+        if garment.role not in {"accessory", "footwear", "layer"}
+    ]
+    if context.code == "active":
+        return any(_garment_evidence(item) & ACTIVE_TERMS for item in primary)
+    if context.code == "outdoor":
+        return not any(item.formality >= 4 for item in primary)
+    return all(_dress_code_suitability(item, context) >= 0.25 for item in primary)
 
 
 def _hard_compatible(first: Garment, second: Garment) -> bool:
@@ -452,11 +650,16 @@ def _score_candidate(
     silhouette = _silhouette_score(primary[0], primary[1]) if len(primary) > 1 else 0.82
     style = _style_score(garments)
     texture = _texture_score(garments)
-    target_formality, target_styles = _occasion_target(occasion)
+    context = occasion_context(occasion)
+    target_formality = context.target_formality
+    target_styles = set(context.target_styles)
     average_formality = sum(formality_values) / len(formality_values)
     occasion_score = max(0.0, 1 - abs(average_formality - target_formality) / 3)
     if any(garment.styles & target_styles for garment in garments):
         occasion_score = min(1.0, occasion_score + 0.12)
+    dress_code = sum(
+        _dress_code_suitability(garment, context) for garment in garments
+    ) / len(garments)
     preferred = _tokens(profile.get("preferred_styles") or [])
     if preferred:
         personal = sum(bool(garment.styles & preferred) for garment in garments) / len(garments)
@@ -472,30 +675,43 @@ def _score_candidate(
         "silhouette": silhouette,
         "style": style,
         "texture": texture,
+        "dress_code": dress_code,
         "occasion_personal": (occasion_score + personal) / 2,
     }
     score = 100 * (
-        completeness * 0.22
-        + coherence * 0.16
-        + colour * 0.18
+        completeness * 0.18
+        + coherence * 0.14
+        + colour * 0.17
         + silhouette * 0.13
-        + texture * 0.09
+        + texture * 0.08
         + style * 0.10
-        + breakdown["occasion_personal"] * 0.12
+        + dress_code * 0.14
+        + breakdown["occasion_personal"] * 0.06
     )
     if any(garment.role == "footwear" for garment in garments):
         score += 1.5
     return min(score, 100), breakdown
 
 
-def _best_addition(base: tuple[Garment, ...], choices: list[Garment]) -> Garment | None:
-    compatible = [choice for choice in choices if all(_hard_compatible(item, choice) for item in base)]
+def _best_addition(
+    base: tuple[Garment, ...],
+    choices: list[Garment],
+    context: OccasionContext,
+) -> Garment | None:
+    compatible = [
+        choice
+        for choice in choices
+        if all(_hard_compatible(item, choice) for item in base)
+        and _dress_code_suitability(choice, context) >= 0.25
+    ]
     if not compatible:
         return None
     return max(
         compatible,
-        key=lambda choice: sum(colour_harmony(item, choice) for item in base) - abs(
-            choice.formality - (sum(item.formality for item in base) / len(base))
+        key=lambda choice: (
+            _dress_code_suitability(choice, context) * 4
+            + sum(colour_harmony(item, choice) for item in base)
+            - abs(choice.formality - context.target_formality) * 0.5
         ),
     )
 
@@ -525,10 +741,10 @@ def generate_outfit_candidates(
             bases.extend((one_piece, blouse) for blouse in blouses)
         bases.append((one_piece,))
 
-    target_formality, target_styles = _occasion_target(occasion)
-    office_request = target_formality >= 4 and "office" in target_styles
-    if office_request:
-        bases = [base for base in bases if _office_ready_base(base)]
+    context = occasion_context(occasion)
+    target_formality = context.target_formality
+    office_request = context.code == "business_formal"
+    bases = [base for base in bases if _contextually_valid_base(base, context)]
 
     expanded: list[tuple[Garment, ...]] = []
     for base in bases:
@@ -538,7 +754,7 @@ def generate_outfit_candidates(
             footwear_choices = [
                 item for item in footwear_choices if _office_ready_footwear(item)
             ]
-        footwear = _best_addition(outfit, footwear_choices)
+        footwear = _best_addition(outfit, footwear_choices, context)
         if footwear:
             outfit += (footwear,)
         if target_formality >= 3:
@@ -547,7 +763,7 @@ def generate_outfit_candidates(
                 layer_choices = [
                     item for item in layer_choices if _office_ready_layer(item)
                 ]
-            layer = _best_addition(outfit, layer_choices)
+            layer = _best_addition(outfit, layer_choices, context)
             if layer:
                 outfit += (layer,)
         accessory_choices = roles["accessory"]
@@ -557,7 +773,7 @@ def generate_outfit_candidates(
                 for item in accessory_choices
                 if _office_ready_accessory(item)
             ]
-        accessory = _best_addition(outfit, accessory_choices)
+        accessory = _best_addition(outfit, accessory_choices, context)
         if accessory and len(outfit) < 5:
             outfit += (accessory,)
         expanded.append(outfit)

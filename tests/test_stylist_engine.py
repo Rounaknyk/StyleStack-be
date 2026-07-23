@@ -1,6 +1,7 @@
 from app.services.stylist_engine import (
     generate_outfit_candidates,
     normalize_garment,
+    occasion_context,
     validate_candidate,
 )
 
@@ -240,3 +241,50 @@ def test_formal_request_can_add_actual_blazer_and_loafers() -> None:
         "loafers",
         "blazer",
     ]
+
+
+def test_natural_language_maps_to_conventional_dress_codes() -> None:
+    assert occasion_context("I need to pitch to a new investor").code == "business_formal"
+    assert occasion_context("normal day at the office").code == "business_casual"
+    assert occasion_context("dinner date tonight").code == "social_polished"
+    assert occasion_context("morning gym session").code == "active"
+    assert occasion_context("friend's sangeet").code == "celebration"
+
+
+def test_active_request_requires_actual_activewear() -> None:
+    candidates = generate_outfit_candidates(
+        [
+            item(
+                "gym-tee",
+                "tshirt",
+                color="black",
+                formality="sporty",
+                tags=["sporty", "activewear"],
+            ),
+            item(
+                "joggers",
+                "joggers",
+                color="grey",
+                formality="sporty",
+                tags=["sporty"],
+            ),
+            item(
+                "formal-shirt",
+                "shirt",
+                color="white",
+                formality="formal",
+                tags=["office"],
+            ),
+            item(
+                "trousers",
+                "trousers",
+                color="navy",
+                formality="formal",
+                tags=["office"],
+            ),
+        ],
+        "I am going for a workout",
+    )
+
+    assert candidates
+    assert candidates[0].item_ids == ["gym-tee", "joggers"]

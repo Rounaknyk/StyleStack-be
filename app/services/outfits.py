@@ -19,6 +19,7 @@ from app.services.stylist_engine import (
     fallback_reasoning,
     generate_outfit_candidates,
     normalize_garment,
+    occasion_context_payload,
     validate_candidate,
 )
 
@@ -96,6 +97,7 @@ def _call_stylist(
         occasion=occasion,
         profile_json=json.dumps(style_profile or {}),
         learned_preferences_json=json.dumps(learned_preferences or {}),
+        dress_code_json=json.dumps(occasion_context_payload(occasion)),
     )
     response = groq_rate_gate.post(
         headers={"Authorization": f"Bearer {settings.groq_api_key}"},
