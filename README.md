@@ -644,6 +644,6 @@ docker run --rm -p 8080:8080 --env-file .env -e PORT=8080 stylestack-api
 
 ### Owner-only private tools
 
-Private diagnostics, notification tests, and broadcast notifications are server-protected for the verified Firebase account whose email is `rounakpro18@gmail.com` or whose verified phone number contains `9322942635`. The app shows an **Admin tools** switch only to that account; turning it off hides the private controls and restores the ordinary user UI.
+Private diagnostics, notification tests, and broadcast notifications are server-protected for the verified Firebase account whose email is `rounakpro18@gmail.com` or `rondevelops1904@gmail.com`, or whose verified phone number contains `9322942635`. The app shows an **Admin tools** switch only to that account; turning it off hides the private controls and restores the ordinary user UI.
 
 The private broadcast composer can send a title, body, optional JPEG/PNG/WebP image (up to 5 MB), and an in-app destination to notification-enabled devices. Images are stored in private Supabase Storage and exposed to FCM with a seven-day signed URL. The API enforces ownership independently of the mobile UI.

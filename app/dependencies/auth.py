@@ -46,12 +46,12 @@ CurrentUser = Annotated[dict[str, Any], Depends(get_current_user)]
 
 # The account that owns private diagnostics and broadcast tooling.  UI gating is
 # deliberately duplicated by these server-side checks.
-_OWNER_EMAIL = "rounakpro18@gmail.com"
+_OWNER_EMAILS = frozenset({"rounakpro18@gmail.com", "rondevelops1904@gmail.com"})
 _OWNER_PHONE_FRAGMENT = "9322942635"
 
 def is_stylestack_owner(current_user: dict[str, Any]) -> bool:
     email = str(current_user.get("email") or "").strip().lower()
-    if email == _OWNER_EMAIL and current_user.get("email_verified") is True:
+    if email in _OWNER_EMAILS and current_user.get("email_verified") is True:
         return True
     phone_digits = "".join(
         character for character in str(current_user.get("phone_number") or "")
