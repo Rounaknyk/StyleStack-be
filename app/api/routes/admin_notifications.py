@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import logging
-import secrets
+from uuid import uuid4
 from typing import Literal
 
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from firebase_admin import messaging
 from pydantic import BaseModel, Field, HttpUrl, model_validator
 
 from app.core.config import get_settings
 from app.core.supabase import get_supabase_client
+from app.dependencies.auth import OwnerUser
 from app.services.push_notifications import build_topic_message, sync_broadcast_topic
 
 router = APIRouter()
@@ -54,18 +55,8 @@ class BroadcastNotificationResponse(BaseModel):
     dry_run: bool
 
 
-def _require_admin_key(x_stylestack_admin_key: str = Header(default="")) -> None:
-    configured = get_settings().admin_notification_key
-    if not configured:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Broadcast notifications are not configured.",
-        )
-    if not secrets.compare_digest(x_stylestack_admin_key, configured):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid admin notification key.",
-        )
+class BroadcastMediaResponse(BaseModel):
+    image_url: str
 
 
 def _refresh_eligible_topic_members() -> int:
@@ -100,15 +91,49 @@ def _refresh_eligible_topic_members() -> int:
     return len(set(tokens))
 
 
+@router.post("/media", response_model=BroadcastMediaResponse)
+async def upload_broadcast_media(
+    current_user: OwnerUser,
+    image: UploadFile = File(description="JPEG, PNG, or WebP notification image"),
+) -> BroadcastMediaResponse:
+    content_type = (image.content_type or "").lower()
+    if content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Image must be JPEG, PNG, or WebP")
+    payload = await image.read(5 * 1024 * 1024 + 1)
+    await image.close()
+    if not payload:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Image is empty")
+    if len(payload) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Image must be 5 MB or smaller")
+
+    extension = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}[content_type]
+    path = f"admin/broadcast/{uuid4()}{extension}"
+    bucket = get_supabase_client().storage.from_(get_settings().supabase_storage_bucket)
+    try:
+        bucket.upload(path=path, file=payload, file_options={"content-type": content_type, "upsert": "false"})
+        signed = bucket.create_signed_url(path, 7 * 24 * 60 * 60)
+        image_url = (
+            signed.get("signedURL") or signed.get("signedUrl")
+        ) if isinstance(signed, dict) else None
+        if not image_url:
+            raise RuntimeError("Storage did not return a signed URL")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("broadcast_media_upload_failed error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Could not upload notification media") from exc
+    logger.info("broadcast_media_uploaded has_media=true")
+    return BroadcastMediaResponse(image_url=image_url)
+
+
 @router.post(
     "/broadcast",
     response_model=BroadcastNotificationResponse,
 )
 def send_broadcast_notification(
     payload: BroadcastNotificationRequest,
-    x_stylestack_admin_key: str = Header(default=""),
+    current_user: OwnerUser,
 ) -> BroadcastNotificationResponse:
-    _require_admin_key(x_stylestack_admin_key)
     subscribed_devices = _refresh_eligible_topic_members()
     if subscribed_devices == 0:
         raise HTTPException(

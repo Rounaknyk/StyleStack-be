@@ -5,7 +5,7 @@ from firebase_admin import messaging
 from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field
 
-from app.dependencies.auth import CurrentUser
+from app.dependencies.auth import CurrentUser, OwnerUser, is_stylestack_owner
 from app.core.supabase import get_supabase_client
 from app.models.user_preferences import (
     DeviceTokenRequest,
@@ -82,8 +82,9 @@ class CurrentUserResponse(BaseModel):
 
 
 class UserAccessResponse(BaseModel):
-    """Server-controlled tester overrides for advertising."""
+    """Server-controlled access flags for private tooling and advertising."""
 
+    owner: bool = False
     tester: bool = False
     bypass_ads: bool = False
 
@@ -108,9 +109,10 @@ def read_user_access(current_user: CurrentUser) -> UserAccessResponse:
     Matching is performed server-side against the verified Firebase email so
     the mobile app cannot grant itself ad-free access.
     """
+    owner = is_stylestack_owner(current_user)
     email = str(current_user.get("email") or "").strip().lower()
     if not email or current_user.get("email_verified") is not True:
-        return UserAccessResponse()
+        return UserAccessResponse(owner=owner)
 
     try:
         rows = (
@@ -127,10 +129,11 @@ def read_user_access(current_user: CurrentUser) -> UserAccessResponse:
         # Monetization lookup failures must never break sign-in or ordinary
         # app access. Fail closed to the normal (non-tester) experience.
         logger.warning("access_override_lookup_failed code=%s", exc.code)
-        return UserAccessResponse()
+        return UserAccessResponse(owner=owner)
     if not rows or not rows[0].get("enabled"):
-        return UserAccessResponse()
+        return UserAccessResponse(owner=owner)
     return UserAccessResponse(
+        owner=owner,
         tester=True,
         bypass_ads=bool(rows[0].get("bypass_ads")),
     )
@@ -289,7 +292,7 @@ def unregister_device(payload: DeviceTokenRequest, current_user: CurrentUser) ->
 
 
 @router.post("/me/test-notification", response_model=TestNotificationResponse)
-def send_test_notification(current_user: CurrentUser) -> TestNotificationResponse:
+def send_test_notification(current_user: OwnerUser) -> TestNotificationResponse:
     tokens = get_supabase_client().table("device_tokens").select("token").eq(
         "owner_firebase_uid", current_user["uid"]
     ).execute().data or []
@@ -336,7 +339,7 @@ def _simulation_profile(uid: str) -> tuple[object, dict, datetime]:
 
 
 @router.post("/me/simulations/daily-outfit", response_model=SimulationResponse)
-def simulate_daily_outfit(current_user: CurrentUser) -> SimulationResponse:
+def simulate_daily_outfit(current_user: OwnerUser) -> SimulationResponse:
     """Run the same daily-outfit delivery function used by the 8 AM scheduler."""
     client, profile, now = _simulation_profile(current_user["uid"])
     try:
@@ -354,7 +357,7 @@ def simulate_daily_outfit(current_user: CurrentUser) -> SimulationResponse:
 
 
 @router.post("/me/simulations/daily-outfit-delay", response_model=SimulationResponse)
-def simulate_delayed_daily_outfit(current_user: CurrentUser) -> SimulationResponse:
+def simulate_delayed_daily_outfit(current_user: OwnerUser) -> SimulationResponse:
     """Schedule the same daily notification flow ten seconds from now."""
     client, profile, _ = _simulation_profile(current_user["uid"])
     notification_scheduler.schedule_daily_outfit_test(client, profile, 10)
@@ -366,7 +369,7 @@ def simulate_delayed_daily_outfit(current_user: CurrentUser) -> SimulationRespon
 
 
 @router.post("/me/simulations/tomorrow-events", response_model=SimulationResponse)
-def simulate_tomorrow_events(current_user: CurrentUser) -> SimulationResponse:
+def simulate_tomorrow_events(current_user: OwnerUser) -> SimulationResponse:
     """Run the same tomorrow-event delivery function used by the scheduler."""
     client, profile, now = _simulation_profile(current_user["uid"])
     try:
