@@ -224,22 +224,39 @@ def normalize_garment(item: dict[str, Any]) -> Garment:
         item.get("ai_visual_tags"),
     )
     category_tokens = _tokens(category, item.get("subcategory"))
-    role_tokens = (
-        combined
-        if category in {"", "other", "unknown", "clothing", "apparel"}
-        else category_tokens
+    identity_tokens = _tokens(item.get("name"), item.get("subcategory"))
+
+    # Categories are user-editable and older imports sometimes stored every
+    # non-core item as "accessory". A specific item name is stronger evidence:
+    # "graphic tee" must remain a top even if its broad category is wrong.
+    # Do not use the whole description for this override: product descriptions
+    # can mention complementary pieces and create false matches.
+    explicit_clothing_terms = (
+        ONE_PIECE_TERMS | LAYER_TERMS | FOOTWEAR_TERMS | BOTTOM_TERMS | TOP_TERMS
     )
-    if role_tokens & ONE_PIECE_TERMS or category in ONE_PIECE_TERMS:
+    role_tokens = (
+        identity_tokens
+        if identity_tokens & explicit_clothing_terms
+        else (
+            combined
+            if category in {"", "other", "unknown", "clothing", "apparel"}
+            else category_tokens
+        )
+    )
+    category_role_tokens = (
+        set() if identity_tokens & explicit_clothing_terms else category_tokens
+    )
+    if role_tokens & ONE_PIECE_TERMS or category_role_tokens & ONE_PIECE_TERMS:
         role = "one_piece"
-    elif role_tokens & LAYER_TERMS or category in LAYER_TERMS:
+    elif role_tokens & LAYER_TERMS or category_role_tokens & LAYER_TERMS:
         role = "layer"
-    elif role_tokens & FOOTWEAR_TERMS or category in FOOTWEAR_TERMS:
+    elif role_tokens & FOOTWEAR_TERMS or category_role_tokens & FOOTWEAR_TERMS:
         role = "footwear"
-    elif role_tokens & ACCESSORY_TERMS or category in ACCESSORY_TERMS:
+    elif role_tokens & ACCESSORY_TERMS or category_role_tokens & ACCESSORY_TERMS:
         role = "accessory"
-    elif role_tokens & BOTTOM_TERMS or category in BOTTOM_TERMS:
+    elif role_tokens & BOTTOM_TERMS or category_role_tokens & BOTTOM_TERMS:
         role = "bottom"
-    elif role_tokens & TOP_TERMS or category in TOP_TERMS:
+    elif role_tokens & TOP_TERMS or category_role_tokens & TOP_TERMS:
         role = "top"
     else:
         role = "unknown"
@@ -620,7 +637,12 @@ def validate_candidate(garments: Iterable[Garment]) -> tuple[bool, str]:
         return False, "duplicate item"
     roles = [garment.role for garment in values]
     one_pieces = [garment for garment in values if garment.role == "one_piece"]
-    if len(one_pieces) > 1 or roles.count("bottom") > 1 or roles.count("layer") > 1:
+    if (
+        len(one_pieces) > 1
+        or roles.count("top") > 1
+        or roles.count("bottom") > 1
+        or roles.count("layer") > 1
+    ):
         return False, "duplicate garment role"
     if one_pieces:
         extra_tops = [garment for garment in values if garment.role == "top"]

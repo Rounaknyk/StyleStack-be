@@ -53,6 +53,30 @@ def test_normalization_exposes_structured_styling_metadata() -> None:
     assert garment.prompt_details["season"] == ["summer"]
 
 
+def test_specific_item_name_corrects_a_broad_accessory_category() -> None:
+    graphic_tee = normalize_garment(
+        item(
+            "graphic-tee",
+            "accessory",
+            name="Black graphic tee",
+            tags=["casual", "graphic"],
+        )
+    )
+
+    assert graphic_tee.role == "top"
+
+
+def test_two_primary_tops_are_never_a_valid_outfit() -> None:
+    shirt = normalize_garment(item("blue-shirt", "shirt", name="Blue shirt"))
+    tee = normalize_garment(item("black-tee", "accessory", name="Black graphic tee"))
+    pants = normalize_garment(item("white-pants", "pants", name="White pants"))
+
+    assert validate_candidate((shirt, tee, pants)) == (
+        False,
+        "duplicate garment role",
+    )
+
+
 def test_formal_and_sporty_primary_pieces_are_rejected() -> None:
     blazer = normalize_garment(
         item("blazer", "blazer", formality="formal", tags=["office"])
