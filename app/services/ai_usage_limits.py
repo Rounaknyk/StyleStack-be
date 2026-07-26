@@ -39,7 +39,27 @@ def wardrobe_upload_quota(uid: str) -> DailyQuota:
     rows = _rows(uid, "wardrobe_upload")
     today = date.today().isoformat()
     today_row = next((row for row in rows if row.get("usage_date") == today), None)
-    first_day = not rows or (len(rows) == 1 and today_row is not None)
+    # Existing users must not receive a fresh first-day allowance merely because
+    # this quota table was introduced after their wardrobe already existed.
+    first_item_response = (
+        get_supabase_client()
+        .table("wardrobe_items")
+        .select("created_at")
+        .eq("owner_firebase_uid", uid)
+        .order("created_at")
+        .limit(1)
+        .execute()
+    )
+    first_item = (first_item_response.data or [None])[0]
+    first_item_day = (
+        str(first_item.get("created_at", ""))[:10]
+        if isinstance(first_item, dict)
+        else None
+    )
+    first_day = (
+        first_item_day == today
+        or (first_item is None and not rows)
+    )
     settings = get_settings()
     limit = settings.wardrobe_upload_first_day_limit if first_day else settings.wardrobe_upload_daily_limit
     used = int(today_row.get("used") or 0) if today_row else 0
