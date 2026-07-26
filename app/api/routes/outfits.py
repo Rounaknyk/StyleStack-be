@@ -21,6 +21,7 @@ from app.services.outfits import (
     record_outfit_feedback,
 )
 from app.services.occasion import today_occasion
+from app.services.ai_usage_limits import consume as consume_ai_quota
 
 router = APIRouter()
 logger = logging.getLogger("stylestack.outfits")
@@ -52,6 +53,9 @@ def suggest_outfit(payload: OutfitSuggestionRequest, current_user: CurrentUser):
     if occasion.strip().lower() in {"daily", "today"}:
         occasion = today_occasion() or "casual everyday look"
     try:
+        if payload.refresh:
+            from app.core.config import get_settings
+            consume_ai_quota(current_user["uid"], "outfit_refresh", get_settings().outfit_refresh_daily_limit)
         outfit = create_outfit_suggestion(
             current_user["uid"],
             city,
@@ -76,6 +80,8 @@ def suggest_outfit(payload: OutfitSuggestionRequest, current_user: CurrentUser):
                 outfit["id"],
             )
         return outfit
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
@@ -101,7 +107,11 @@ def stylist_chat(payload: OutfitChatRequest, current_user: CurrentUser):
         raise HTTPException(status_code=422, detail="Set a city before asking your stylist")
     occasion = f"Stylist chat: {payload.message.strip()}"[:180]
     try:
+        from app.core.config import get_settings
+        consume_ai_quota(current_user["uid"], "stylist_chat", get_settings().stylist_chat_daily_limit)
         return create_outfit_suggestion(current_user["uid"], city, occasion)
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:

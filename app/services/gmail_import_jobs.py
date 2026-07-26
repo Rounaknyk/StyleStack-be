@@ -80,6 +80,13 @@ class GmailImportJobQueue:
             )
             return job.public_snapshot()
 
+    def has_active_job(self, owner_uid: str) -> bool:
+        """Return whether this user already has a queued or running import."""
+        with self._lock:
+            active_id = self._active_by_user.get(owner_uid)
+            job = self._jobs.get(active_id) if active_id else None
+            return bool(job and job.status in {"queued", "processing"})
+
     def get(self, job_id: str, owner_uid: str) -> dict[str, object] | None:
         with self._lock:
             job = self._jobs.get(job_id)

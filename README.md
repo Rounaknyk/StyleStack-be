@@ -302,6 +302,12 @@ those records into a single look:
 GET /api/v1/wardrobe/wear-history
 ```
 
+### AI usage safeguards
+
+StyleStack has a database-backed per-user daily quota gate before expensive work reaches the in-process Groq queue. The first calendar day a user uploads wardrobe photos allows **30 items** (three 10-photo batches); later days allow **10 items**. Cached duplicate analysis does not consume the image-preview allowance. Default pilot limits are 20 global Groq requests/minute, 3 queued Groq requests/user/minute, 10 image previews/day, 3 manual outfit refreshes/day, 8 stylist-chat requests/day, and 1 Gmail sync/day. Configure the values with the corresponding `*_LIMIT` environment variables.
+
+Run [`supabase/migrations/202607260001_add_ai_usage_daily.sql`](supabase/migrations/202607260001_add_ai_usage_daily.sql) in Supabase before enabling these limits on an existing project. The queue remains process-local for the MVP, so it is a rate-control layer rather than a durable multi-instance worker.
+
 ### Gmail Closet Sync
 
 Closet Sync searches only confirmed Amazon `Delivered:` emails. Each result is

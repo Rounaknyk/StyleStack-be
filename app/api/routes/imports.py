@@ -11,7 +11,7 @@ from app.models.imports import (
 )
 from app.services.gmail_import import import_gmail_orders
 from app.services.gmail_import_jobs import gmail_import_jobs
-from app.services.pilot_limits import pilot_gmail_limit
+from app.services.ai_usage_limits import consume as consume_ai_quota
 from app.services.wardrobe import ensure_profile
 
 router = APIRouter()
@@ -31,6 +31,14 @@ def start_gmail_import_job(
     client = get_supabase_client()
     ensure_profile(client, current_user)
     try:
+        from app.core.config import get_settings
+        # Re-opening an active job must not consume another daily allowance.
+        if not gmail_import_jobs.has_active_job(current_user["uid"]):
+            consume_ai_quota(
+                current_user["uid"],
+                "gmail_sync",
+                get_settings().gmail_sync_daily_limit,
+            )
         return GmailImportJobResponse.model_validate(
             gmail_import_jobs.enqueue(
                 current_user["uid"],
@@ -61,11 +69,17 @@ def sync_gmail_orders(payload: GmailImportRequest, current_user: CurrentUser) ->
     client = get_supabase_client()
     ensure_profile(client, current_user)
     try:
+        from app.core.config import get_settings
+        consume_ai_quota(
+            current_user["uid"],
+            "gmail_sync",
+            get_settings().gmail_sync_daily_limit,
+        )
         scanned, imported, skipped = import_gmail_orders(
             client,
             current_user["uid"],
             payload.access_token,
-            pilot_gmail_limit(payload.max_messages),
+            payload.max_messages,
         )
         logger.debug(
             "gmail_import_completed uid=%s scanned=%s imported=%s skipped=%s",

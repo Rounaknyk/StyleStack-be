@@ -16,6 +16,7 @@ from app.models.outfit_selfie import (
     OutfitSelfieHistoryEntry,
 )
 from app.services.ai_tagging import analyze_outfit_selfie_bytes
+from app.services.ai_usage_limits import consume as consume_ai_quota
 from app.services.wardrobe import add_signed_image_url, database_error, ensure_profile
 
 router = APIRouter()
@@ -87,6 +88,11 @@ async def analyze_outfit_selfie(
     client = get_supabase_client()
     uid = current_user["uid"]
     ensure_profile(client, current_user)
+    consume_ai_quota(
+        uid,
+        "outfit_selfie",
+        get_settings().outfit_selfie_daily_limit,
+    )
     try:
         wardrobe_response = (
             client.table("wardrobe_items")

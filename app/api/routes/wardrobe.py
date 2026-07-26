@@ -22,6 +22,7 @@ from app.models.ai_tags import ClothingDetection, ClothingTags
 from app.services.ai_request_queue import AiRequestJob, ai_request_queue
 from app.services.background_jobs import ImageTaggingJob, background_jobs
 from app.services.image_fingerprint import perceptual_hash
+from app.services.ai_usage_limits import consume as consume_ai_quota, wardrobe_upload_quota
 from app.services.wardrobe import (
     add_signed_image_url,
     database_error,
@@ -138,6 +139,13 @@ def _enqueue_or_reuse(
             image_hash=image_hash,
             result=cached,
         )
+    # Cached analysis is free and immediate. New vision work is protected by a
+    # durable daily allowance before it enters the process-wide Groq queue.
+    consume_ai_quota(
+        uid,
+        'image_preview',
+        get_settings().image_preview_daily_limit,
+    )
     try:
         return ai_request_queue.enqueue(
             owner_uid=uid,
@@ -206,6 +214,11 @@ def retry_analysis_job(
     job_id: str,
     current_user: CurrentUser,
 ) -> dict[str, Any]:
+    consume_ai_quota(
+        current_user['uid'],
+        'image_preview',
+        get_settings().image_preview_daily_limit,
+    )
     job = ai_request_queue.retry(job_id, current_user["uid"])
     if not job:
         raise HTTPException(status_code=404, detail="Analysis job not found")
@@ -241,6 +254,8 @@ async def analyze_image_preview(
             tags.category,
         )
         return tags
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(
             "image_preview_analysis_failed uid=%s error_type=%s",
@@ -274,6 +289,8 @@ async def detect_items_preview(
             len(result.items),
         )
         return result
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(
             "image_item_detection_failed uid=%s error_type=%s",
@@ -284,6 +301,13 @@ async def detect_items_preview(
             status_code=502,
             detail="AI could not detect items in this image. You can still add it manually.",
         ) from exc
+
+
+@router.get("/upload-quota")
+def read_upload_quota(current_user: CurrentUser) -> dict[str, object]:
+    client = get_supabase_client()
+    ensure_profile(client, current_user)
+    return wardrobe_upload_quota(current_user["uid"]).public()
 
 
 @router.post(
@@ -334,6 +358,8 @@ async def create_wardrobe_item(
     client = get_supabase_client()
     uid = current_user["uid"]
     ensure_profile(client, current_user)
+    quota = wardrobe_upload_quota(uid)
+    consume_ai_quota(uid, "wardrobe_upload", quota.limit)
 
     # Never trust the original filename for a storage path.
     suffix = ALLOWED_IMAGE_TYPES[content_type]
@@ -581,6 +607,11 @@ def retry_wardrobe_item_processing(
             detail="This item has no saved image to analyze. Enter details manually.",
         )
     try:
+        consume_ai_quota(
+            uid,
+            'image_preview',
+            get_settings().image_preview_daily_limit,
+        )
         background_jobs.retry_ai_tagging(
             ImageTaggingJob(
                 item_id=str(item_id),

@@ -44,11 +44,20 @@ class Settings(BaseSettings):
     # model without changing image auto-tagging.
     groq_stylist_model: str = "qwen/qwen3.6-27b"
     groq_request_timeout_seconds: float = 30.0
-    groq_requests_per_minute: int = 30
+    groq_requests_per_minute: int = 20
     groq_default_retry_after_seconds: float = 2.0
     ai_requests_per_user_per_minute: int = 3
     ai_request_queue_max_size: int = 500
     ai_request_job_retention_seconds: int = 3600
+    # Durable pilot quotas. They are configurable by environment variable and
+    # enforced before work reaches Groq/Gemini.
+    wardrobe_upload_first_day_limit: int = 30
+    wardrobe_upload_daily_limit: int = 10
+    image_preview_daily_limit: int = 10
+    outfit_refresh_daily_limit: int = 3
+    stylist_chat_daily_limit: int = 8
+    gmail_sync_daily_limit: int = 1
+    outfit_selfie_daily_limit: int = 3
     gemini_api_key: str | None = None
     gemini_vision_model: str = "gemini-flash-latest"
     pexels_api_key: str | None = None
