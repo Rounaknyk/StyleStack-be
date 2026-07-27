@@ -8,7 +8,8 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from app.core.config import get_settings
 from app.core.supabase import get_supabase_client
 from app.dependencies.auth import CurrentUser
-from app.models.canvas import CanvasStyleItem, CanvasStyleResponse
+from app.models.calendar import CalendarEventResponse
+from app.models.canvas import CanvasStyleItem, CanvasStyleResponse, ScheduleCanvasStyleRequest
 
 router = APIRouter()
 logger = logging.getLogger("stylestack.canvas")
@@ -179,3 +180,66 @@ def delete_canvas_style(style_id: UUID, current_user: CurrentUser) -> None:
             client.storage.from_(get_settings().supabase_storage_bucket).remove([path])
         except Exception:
             logger.warning("canvas_preview_delete_failed style_id=%s", style_id)
+
+
+@router.post("/styles/{style_id}/schedule", response_model=CalendarEventResponse, status_code=status.HTTP_201_CREATED)
+def schedule_canvas_style(style_id: UUID, req: ScheduleCanvasStyleRequest, current_user: CurrentUser) -> dict[str, Any]:
+    client = get_supabase_client()
+    uid = current_user["uid"]
+    
+    # 1. Verify canvas style
+    rows = client.table("canvas_styles").select("id, name, items").eq("id", str(style_id)).eq("owner_firebase_uid", uid).limit(1).execute().data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Canvas style not found")
+    canvas_style = rows[0]
+    
+    # 2. Extract item IDs, preserving order (from canvas positions ideally, or just raw order)
+    raw_items = canvas_style.get("items") or []
+    item_ids = list(dict.fromkeys(str(item.get("item_id")) for item in raw_items if item.get("item_id")))
+    if not item_ids:
+        raise HTTPException(status_code=422, detail="Canvas style has no items")
+        
+    # 3. Verify all items exist and belong to user
+    owned = client.table("wardrobe_items").select("id").eq("owner_firebase_uid", uid).in_("id", item_ids).execute().data or []
+    if {str(row["id"]) for row in owned} != set(item_ids):
+        raise HTTPException(status_code=422, detail="Some items in this style no longer exist in your wardrobe")
+        
+    # 4. Create outfit
+    outfit_id = str(uuid4())
+    occasion_label = f"Canvas Style: {req.title.strip()}"
+    client.table("outfits").insert({
+        "id": outfit_id,
+        "owner_firebase_uid": uid,
+        "occasion": occasion_label[:80],
+        "reasoning": f"Pre-selected look '{req.title.strip()}' created from your style canvas.",
+        "weather": {}
+    }).execute()
+    
+    # 5. Link outfit items
+    client.table("outfit_items").insert([
+        {"outfit_id": outfit_id, "wardrobe_item_id": iid, "position": idx}
+        for idx, iid in enumerate(item_ids)
+    ]).execute()
+    
+    # 6. Create calendar event
+    event_id = str(uuid4())
+    event_data = {
+        "id": event_id,
+        "owner_firebase_uid": uid,
+        "source": "manual",
+        "title": req.title.strip(),
+        "description": req.description.strip() if req.description else None,
+        "location": req.location.strip() if req.location else None,
+        "start_at": req.start_at.isoformat(),
+        "end_at": req.end_at.isoformat() if req.end_at else None,
+        "all_day": req.all_day,
+        "occasion": "event",
+        "outfit_id": outfit_id
+    }
+    event_response = client.table("calendar_events").insert(event_data).execute()
+    
+    if not event_response.data:
+        raise HTTPException(status_code=500, detail="Failed to create calendar event")
+        
+    logger.info("canvas_style_scheduled uid=%s style_id=%s event_id=%s outfit_id=%s", uid, style_id, event_id, outfit_id)
+    return event_response.data[0]

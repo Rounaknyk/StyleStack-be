@@ -20,3 +20,12 @@ class CanvasStyleResponse(BaseModel):
     items: list[CanvasStyleItem] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+
+class ScheduleCanvasStyleRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    description: str | None = None
+    location: str | None = None
+    start_at: datetime
+    end_at: datetime | None = None
+    all_day: bool = False

@@ -246,7 +246,11 @@ class NotificationScheduler:
             if event_start.astimezone(now.tzinfo).date() != tomorrow:
                 continue
             outfit = None
-            if profile.get("city"):
+            if event.get("outfit_id"):
+                outfit_data = client.table("outfits").select("id").eq("id", str(event["outfit_id"])).limit(1).execute().data
+                if outfit_data:
+                    outfit = outfit_data[0]
+            elif profile.get("city"):
                 try:
                     occasion = str(event.get("title") or "event").strip()
                     event_type = str(event.get("occasion") or "").strip()
