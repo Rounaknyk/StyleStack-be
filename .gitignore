@@ -8,4 +8,12 @@ __pycache__/
 .coverage
 htmlcov/
 .DS_Store
-
+curl_output.txt
+full_error.json
+response.json
+final_tryon.jpg
+output_tryon.jpg
+digitized/
+fix_file.py
+parse_error.py
+test_curl.py
