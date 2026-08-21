@@ -59,7 +59,7 @@ class BroadcastMediaResponse(BaseModel):
     image_url: str
 
 
-def _refresh_eligible_topic_members() -> int:
+def _get_eligible_broadcast_tokens() -> list[str]:
     """Backfill existing opted-in devices before each owner broadcast."""
     client = get_supabase_client()
     enabled_profiles = (
@@ -72,7 +72,7 @@ def _refresh_eligible_topic_members() -> int:
     )
     enabled_uids = [row["firebase_uid"] for row in enabled_profiles]
     if not enabled_uids:
-        return 0
+        return []
 
     tokens: list[str] = []
     # PostgREST URL length stays bounded while FCM accepts at most 1,000 topic
@@ -87,8 +87,7 @@ def _refresh_eligible_topic_members() -> int:
             or []
         )
         tokens.extend(str(row["token"]) for row in rows if row.get("token"))
-    sync_broadcast_topic(tokens, subscribed=True)
-    return len(set(tokens))
+    return list(set(tokens))
 
 
 @router.post("/media", response_model=BroadcastMediaResponse)
@@ -134,12 +133,13 @@ def send_broadcast_notification(
     payload: BroadcastNotificationRequest,
     current_user: OwnerUser,
 ) -> BroadcastNotificationResponse:
-    subscribed_devices = _refresh_eligible_topic_members()
-    if subscribed_devices == 0:
+    tokens = _get_eligible_broadcast_tokens()
+    if not tokens:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No opted-in notification devices are registered.",
         )
+    subscribed_devices = len(tokens)
 
     image_url = str(payload.image_url) if payload.image_url else None
     deep_link = f"stylestack://{payload.destination}"
@@ -154,15 +154,21 @@ def send_broadcast_notification(
         data["image_url"] = image_url
 
     try:
-        message_id = messaging.send(
-            build_topic_message(
-                title=payload.title.strip(),
-                body=payload.body.strip(),
-                data=data,
-                image_url=image_url,
-            ),
-            dry_run=payload.dry_run,
-        )
+        # Multicast can send to up to 500 tokens per batch
+        message_id = "multicast"
+        from app.services.push_notifications import build_multicast_message
+        for i in range(0, len(tokens), 500):
+            batch = tokens[i : i + 500]
+            messaging.send_each_for_multicast(
+                build_multicast_message(
+                    tokens=batch,
+                    title=payload.title.strip(),
+                    body=payload.body.strip(),
+                    data=data,
+                    image_url=image_url,
+                ),
+                dry_run=payload.dry_run,
+            )
     except Exception as exc:
         logger.exception(
             "broadcast_notification_failed destination=%s has_media=%s dry_run=%s",
