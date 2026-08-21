@@ -221,8 +221,8 @@ def schedule_canvas_style(style_id: UUID, req: ScheduleCanvasStyleRequest, curre
         for idx, iid in enumerate(item_ids)
     ]).execute()
     
-    # 6. Create calendar event
-    event_id = str(uuid4())
+    # 6. Create or update calendar event
+    event_id = req.event_id if req.event_id and req.event_id != 'new' else str(uuid4())
     event_data = {
         "id": event_id,
         "owner_firebase_uid": uid,
@@ -236,7 +236,11 @@ def schedule_canvas_style(style_id: UUID, req: ScheduleCanvasStyleRequest, curre
         "occasion": "event",
         "outfit_id": outfit_id
     }
-    event_response = client.table("calendar_events").insert(event_data).execute()
+    
+    if req.event_id and req.event_id != 'new':
+        event_response = client.table("calendar_events").update(event_data).eq("id", event_id).eq("owner_firebase_uid", uid).execute()
+    else:
+        event_response = client.table("calendar_events").insert(event_data).execute()
     
     if not event_response.data:
         raise HTTPException(status_code=500, detail="Failed to create calendar event")

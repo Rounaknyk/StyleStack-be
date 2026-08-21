@@ -29,3 +29,4 @@ class ScheduleCanvasStyleRequest(BaseModel):
     start_at: datetime
     end_at: datetime | None = None
     all_day: bool = False
+    event_id: str | None = None
