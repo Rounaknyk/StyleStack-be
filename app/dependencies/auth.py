@@ -1,11 +1,12 @@
 import logging
 from typing import Any, Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from firebase_admin import auth
+from firebase_admin import auth, app_check
 
 from app.core.firebase import verify_firebase_token
+from app.core.config import get_settings
 
 bearer_scheme = HTTPBearer(auto_error=False)
 logger = logging.getLogger("stylestack.auth")
@@ -15,6 +16,7 @@ def get_current_user(
     credentials: Annotated[
         HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
     ],
+    x_firebase_appcheck: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
     """Validate a Bearer Firebase ID token and return its decoded claims."""
     unauthorized = HTTPException(
@@ -25,6 +27,17 @@ def get_current_user(
 
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise unauthorized
+
+    settings = get_settings()
+    if settings.firebase_app_check_enabled:
+        if not x_firebase_appcheck:
+            logger.warning("firebase_app_check_failed reason=missing_token")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing App Check token")
+        try:
+            app_check.verify_token(x_firebase_appcheck)
+        except Exception as exc:
+            logger.warning("firebase_app_check_failed reason=%s", type(exc).__name__)
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid App Check token")
 
     try:
         decoded_token = verify_firebase_token(credentials.credentials)

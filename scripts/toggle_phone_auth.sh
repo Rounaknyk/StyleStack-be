@@ -8,13 +8,13 @@
 # ==============================================================================
 
 # 1. Set your backend URL (change to your production URL when deployed)
-API_URL="http://192.168.1.7:8000/api/v1"
+API_URL="https://stylestack-be.onrender.com/api/v1"
 
 # 2. Set your secret Admin API Key (This must match the ADMIN_API_KEY env variable on the backend)
-ADMIN_KEY="your_super_secret_admin_key"
+ADMIN_KEY="rounak_is_admin"
 
 # 3. Choose whether to enable or disable (true or false)
-ENABLE_PHONE_AUTH="false" 
+ENABLE_PHONE_AUTH="false"  
 
 
 echo "Toggling phone authentication to: $ENABLE_PHONE_AUTH"

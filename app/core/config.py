@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     gmail_import_log_email_previews: bool = False
     google_oauth_client_id: str | None = None
     google_oauth_client_secret: str | None = None
+    firebase_app_check_enabled: bool = False
     google_calendar_auto_sync_enabled: bool = True
     # Refresh connected calendars frequently enough to catch last-minute
     # meetings without polling Google on every API request.
