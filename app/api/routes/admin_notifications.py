@@ -159,7 +159,7 @@ def send_broadcast_notification(
         from app.services.push_notifications import build_multicast_message
         for i in range(0, len(tokens), 500):
             batch = tokens[i : i + 500]
-            messaging.send_each_for_multicast(
+            response = messaging.send_each_for_multicast(
                 build_multicast_message(
                     tokens=batch,
                     title=payload.title.strip(),
@@ -169,6 +169,14 @@ def send_broadcast_notification(
                 ),
                 dry_run=payload.dry_run,
             )
+            if response.failure_count > 0:
+                for idx, res in enumerate(response.responses):
+                    if not res.success:
+                        logger.warning(
+                            "broadcast_notification_token_failed token=%s error=%s",
+                            batch[idx],
+                            res.exception,
+                        )
     except Exception as exc:
         logger.exception(
             "broadcast_notification_failed destination=%s has_media=%s dry_run=%s",
