@@ -4,6 +4,7 @@ from app.api.routes import (
     admin_notifications,
     calendar,
     canvas,
+    config,
     imports,
     outfits,
     users,
@@ -17,6 +18,7 @@ api_router.include_router(outfits.router, prefix="/outfits", tags=["outfits"])
 api_router.include_router(imports.router, prefix="/imports", tags=["imports"])
 api_router.include_router(calendar.router, prefix="/calendar", tags=["calendar"])
 api_router.include_router(canvas.router, prefix="/canvas", tags=["canvas styles"])
+api_router.include_router(config.router, prefix="/config", tags=["config"])
 api_router.include_router(
     admin_notifications.router,
     prefix="/admin/notifications",
