@@ -30,35 +30,57 @@ def verify_admin_api_key(api_key: str | None = Depends(api_key_header)):
 
 
 class AppFeatures(BaseModel):
-    phone_auth_enabled: bool
+    phone_auth_enabled: bool | None = None
+    google_calendar_enabled: bool | None = None
 
 
 @router.get("/features", response_model=AppFeatures)
 def get_features():
     client = get_supabase_client()
+    phone_enabled = True
+    calendar_enabled = False
     try:
-        data = client.table("app_config").select("config_value").eq("config_key", "phone_auth_enabled").limit(1).execute()
-        if data.data and len(data.data) > 0:
-            is_enabled = str(data.data[0].get("config_value", "true")).lower() == "true"
-            return AppFeatures(phone_auth_enabled=is_enabled)
+        # Fetch all config values to avoid multiple queries
+        data = client.table("app_config").select("*").in_("config_key", ["phone_auth_enabled", "google_calendar_enabled"]).execute()
+        if data.data:
+            for item in data.data:
+                val = str(item.get("config_value", "false")).lower() == "true"
+                if item["config_key"] == "phone_auth_enabled":
+                    phone_enabled = val
+                elif item["config_key"] == "google_calendar_enabled":
+                    calendar_enabled = val
     except Exception as e:
         logger.error("Failed to read app_config: %s", e)
     
-    # Default fallback
-    return AppFeatures(phone_auth_enabled=True)
+    return AppFeatures(
+        phone_auth_enabled=phone_enabled,
+        google_calendar_enabled=calendar_enabled,
+    )
 
 
 @router.post("/features", response_model=AppFeatures)
 def update_features(features: AppFeatures, _: str = Depends(verify_admin_api_key)):
     client = get_supabase_client()
     try:
-        # Since config_value is jsonb, we pass the boolean (Supabase client will serialize it)
-        client.table("app_config").upsert({
-            "config_key": "phone_auth_enabled",
-            "config_value": features.phone_auth_enabled
-        }).execute()
-        logger.info("Features updated: phone_auth_enabled=%s", features.phone_auth_enabled)
-        return features
+        upserts = []
+        if features.phone_auth_enabled is not None:
+            upserts.append({
+                "config_key": "phone_auth_enabled",
+                "config_value": features.phone_auth_enabled
+            })
+        if features.google_calendar_enabled is not None:
+            upserts.append({
+                "config_key": "google_calendar_enabled",
+                "config_value": features.google_calendar_enabled
+            })
+            
+        if upserts:
+            client.table("app_config").upsert(upserts).execute()
+            
+        logger.info("Features updated: %s", features.dict(exclude_unset=True))
+        
+        # Return current full state
+        return get_features()
     except Exception as e:
         logger.error("Failed to update app_config: %s", e)
         raise HTTPException(
