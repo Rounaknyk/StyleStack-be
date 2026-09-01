@@ -78,10 +78,23 @@ Person Image + Garment Image
 - **Important**: `max_containers=1` is set to prevent runaway costs
 - `scaledown_window=60` shuts down idle containers quickly
 
+## ⚙️ Feature Flags & Admin Controls
+We use Supabase `app_config` to control runtime feature flags (e.g., hiding Google Calendar Sync during store review).
+
+### Toggling Features
+There are two ways to toggle features:
+1. **In-App Admin UI (Recommended)**: If you log in with your owner email (`rounakpro18@gmail.com` or `rondevelops1904@gmail.com`), you can navigate to **Profile > Preferences > Admin tools** and toggle features directly. This uses the `/api/v1/config/owner/features` endpoint securely with your Firebase token.
+2. **Backend Script**: You can run `./scripts/toggle_calendar_sync.sh` from this directory. This script hits the `/api/v1/config/features` endpoint using the `ADMIN_API_KEY`.
+
 ## 📁 Project Structure
 ```
 app/
+  api/
+    routes/
+      config.py       # Feature flag endpoints
   modal_tryon.py      # Main Modal deployment (all endpoints)
+scripts/
+  toggle_calendar_sync.sh # Bash script to toggle features via Admin API Key
 test_digitize.py      # Interactive wardrobe digitizer test
 test_api.py           # Virtual try-on test
 test_curl.py          # Quick API test

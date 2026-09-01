@@ -5,6 +5,7 @@ from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
 
 from app.core.supabase import get_supabase_client
+from app.dependencies.auth import OwnerUser
 
 router = APIRouter()
 logger = logging.getLogger("stylestack.config")
@@ -60,6 +61,16 @@ def get_features():
 
 @router.post("/features", response_model=AppFeatures)
 def update_features(features: AppFeatures, _: str = Depends(verify_admin_api_key)):
+    return _do_update_features(features)
+
+
+@router.post("/owner/features", response_model=AppFeatures)
+def update_owner_features(features: AppFeatures, owner: OwnerUser):
+    logger.info("Owner %s is updating features via in-app toggle", owner.get("email") or owner.get("uid"))
+    return _do_update_features(features)
+
+
+def _do_update_features(features: AppFeatures):
     client = get_supabase_client()
     try:
         upserts = []
@@ -87,3 +98,4 @@ def update_features(features: AppFeatures, _: str = Depends(verify_admin_api_key
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update configuration",
         )
+
