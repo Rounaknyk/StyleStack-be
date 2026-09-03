@@ -33,6 +33,7 @@ def verify_admin_api_key(api_key: str | None = Depends(api_key_header)):
 class AppFeatures(BaseModel):
     phone_auth_enabled: bool | None = None
     google_calendar_enabled: bool | None = None
+    gmail_sync_enabled: bool | None = None
 
 
 @router.get("/features", response_model=AppFeatures)
@@ -40,9 +41,10 @@ def get_features():
     client = get_supabase_client()
     phone_enabled = True
     calendar_enabled = False
+    gmail_enabled = False
     try:
         # Fetch all config values to avoid multiple queries
-        data = client.table("app_config").select("*").in_("config_key", ["phone_auth_enabled", "google_calendar_enabled"]).execute()
+        data = client.table("app_config").select("*").in_("config_key", ["phone_auth_enabled", "google_calendar_enabled", "gmail_sync_enabled"]).execute()
         if data.data:
             for item in data.data:
                 val = str(item.get("config_value", "false")).lower() == "true"
@@ -50,12 +52,15 @@ def get_features():
                     phone_enabled = val
                 elif item["config_key"] == "google_calendar_enabled":
                     calendar_enabled = val
+                elif item["config_key"] == "gmail_sync_enabled":
+                    gmail_enabled = val
     except Exception as e:
         logger.error("Failed to read app_config: %s", e)
     
     return AppFeatures(
         phone_auth_enabled=phone_enabled,
         google_calendar_enabled=calendar_enabled,
+        gmail_sync_enabled=gmail_enabled,
     )
 
 
@@ -83,6 +88,11 @@ def _do_update_features(features: AppFeatures):
             upserts.append({
                 "config_key": "google_calendar_enabled",
                 "config_value": features.google_calendar_enabled
+            })
+        if features.gmail_sync_enabled is not None:
+            upserts.append({
+                "config_key": "gmail_sync_enabled",
+                "config_value": features.gmail_sync_enabled
             })
             
         if upserts:
