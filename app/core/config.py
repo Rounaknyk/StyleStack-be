@@ -39,10 +39,10 @@ class Settings(BaseSettings):
     )
 
     groq_api_key: str | None = None
-    groq_vision_model: str = "llama-3.2-90b-vision-preview"
+    groq_vision_model: str = "qwen/qwen3.8-27b"
     # Kept separate so the text-only stylist can move to a cheaper/faster
     # model without changing image auto-tagging.
-    groq_stylist_model: str = "llama-3.3-70b-versatile"
+    groq_stylist_model: str = "qwen/qwen3.8-27b"
     groq_request_timeout_seconds: float = 30.0
     groq_requests_per_minute: int = 20
     groq_default_retry_after_seconds: float = 2.0
