@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from threading import Event, Lock, Thread, Timer
 from firebase_admin import messaging
+import httpx
 
 from app.core.config import get_settings
 from app.services.push_notifications import build_multicast_message
@@ -95,6 +96,14 @@ class NotificationScheduler:
                     profile["firebase_uid"],
                     imported,
                 )
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (400, 401):
+                    logger.warning("google_calendar_token_invalid uid=%s disconnecting...", profile["firebase_uid"])
+                    client.table("profiles").update({"google_calendar_connected": False, "google_calendar_refresh_token": None}).eq("firebase_uid", profile["firebase_uid"]).execute()
+                else:
+                    logger.exception(
+                        "google_calendar_auto_sync_failed uid=%s", profile["firebase_uid"]
+                    )
             except Exception:
                 logger.exception(
                     "google_calendar_auto_sync_failed uid=%s", profile["firebase_uid"]
