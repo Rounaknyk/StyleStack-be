@@ -11,6 +11,4 @@ poofbg==0.1.0
 rembg[cpu]==2.0.76
 slowapi==0.1.9
 
-celery==5.4.0
-redis==5.0.8
-qstash==2.7.2
+qstash==3.4.0
