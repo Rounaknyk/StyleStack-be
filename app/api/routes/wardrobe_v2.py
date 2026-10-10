@@ -1,7 +1,7 @@
 from fastapi import APIRouter, UploadFile
 import os
 from qstash import QStash
-from app.api.dependencies import CurrentUser
+from app.dependencies.auth import CurrentUser
 from app.api.routes.wardrobe import _read_ai_image
 from app.services.hashing import perceptual_hash
 from app.core.supabase import get_supabase_client
