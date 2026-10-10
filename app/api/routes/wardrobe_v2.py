@@ -22,12 +22,13 @@ async def create_wardrobe_item_v2(
     
     task_id = f"job_{image_hash}_{current_user.uid}"
     
-    # 2. Publish Webhook to QStash
+    # Publish Webhook to QStash
     qstash_token = os.getenv("QSTASH_TOKEN", "mock_token")
     client = QStash(qstash_token)
     
-    # In local development we might use ngrok, in production it's the Vercel URL
-    webhook_url = os.getenv("VERCEL_URL", "http://localhost:8000") + "/api/v2/wardrobe/internal/process-image"
+    # Render automatically sets RENDER_EXTERNAL_URL in production
+    base_url = os.getenv("RENDER_EXTERNAL_URL", "http://localhost:8000")
+    webhook_url = f"{base_url}/api/v2/wardrobe/internal/process-image"
     
     # Publish to QStash
     try:
