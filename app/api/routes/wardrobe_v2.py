@@ -8,10 +8,35 @@ from app.core.supabase import get_supabase_client
 
 router = APIRouter()
 
+from typing import Annotated
+from fastapi import Form, File
+from datetime import date
+from decimal import Decimal
+
 @router.post("/items/", status_code=202)
 async def create_wardrobe_item_v2(
-    image: UploadFile,
     current_user: CurrentUser,
+    name: Annotated[str, Form(min_length=1, max_length=200)],
+    category: Annotated[str, Form(min_length=1, max_length=100)],
+    image: Annotated[UploadFile, File(description="JPEG, PNG, or WebP; maximum 10 MB")],
+    subcategory: Annotated[str | None, Form(max_length=100)] = None,
+    brand: Annotated[str | None, Form(max_length=100)] = None,
+    color: Annotated[str | None, Form(max_length=100)] = None,
+    size: Annotated[str | None, Form(max_length=50)] = None,
+    season: Annotated[str | None, Form(description="Comma-separated seasons")] = None,
+    tags: Annotated[str | None, Form(description="Comma-separated tags")] = None,
+    description: Annotated[str | None, Form(max_length=500)] = None,
+    formality: Annotated[str | None, Form(max_length=50)] = None,
+    ai_category: Annotated[str | None, Form(max_length=100)] = None,
+    ai_color: Annotated[str | None, Form(max_length=100)] = None,
+    ai_season: Annotated[str | None, Form(max_length=50)] = None,
+    ai_formality: Annotated[str | None, Form(max_length=50)] = None,
+    ai_description: Annotated[str | None, Form(max_length=500)] = None,
+    ai_tags: Annotated[str | None, Form(description="Comma-separated AI tags")] = None,
+    notes: Annotated[str | None, Form(max_length=2000)] = None,
+    purchase_date: Annotated[date | None, Form()] = None,
+    purchase_price: Annotated[Decimal | None, Form(ge=0, max_digits=10, decimal_places=2)] = None,
+    currency: Annotated[str | None, Form(min_length=3, max_length=3)] = None,
 ):
     """
     V2 Architecture Migration: Uses Upstash QStash Serverless Message Queue. 
