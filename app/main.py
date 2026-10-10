@@ -95,3 +95,6 @@ def health_check() -> dict[str, str]:
 
 
 app.include_router(api_router, prefix=settings.api_v1_prefix)
+
+from app.api.routes import wardrobe_v2
+app.include_router(wardrobe_v2.router, prefix="/api/v2/wardrobe", tags=["wardrobe-v2"])
