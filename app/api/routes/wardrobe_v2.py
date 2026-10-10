@@ -3,7 +3,7 @@ import os
 from qstash import QStash
 from app.dependencies.auth import CurrentUser
 from app.api.routes.wardrobe import _read_ai_image
-from app.services.hashing import perceptual_hash
+from app.services.image_fingerprint import perceptual_hash
 from app.core.supabase import get_supabase_client
 
 router = APIRouter()
